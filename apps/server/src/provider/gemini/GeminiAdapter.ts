@@ -1,11 +1,10 @@
 import {
   ApprovalRequestId,
-  type GrokSettings,
+  type GeminiSettings,
   EventId,
   type ProviderApprovalDecision,
   type ProviderRuntimeEvent,
   type ProviderSession,
-  type ProviderUserInputAnswers,
   ProviderDriverKind,
   ProviderInstanceId,
   RuntimeRequestId,
@@ -54,32 +53,44 @@ import {
 import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
-  applyGrokAcpModelSelection,
-  currentGrokModelIdFromSessionSetup,
-  makeGrokAcpRuntime,
-  resolveGrokAcpBaseModelId,
-} from "../acp/GrokAcpSupport.ts";
-import {
-  extractXAiAskUserQuestions,
-  makeXAiAskUserQuestionCancelledResponse,
-  makeXAiAskUserQuestionResponse,
-  promptResponseHasMissingXAiStopReason,
-  XAiAskUserQuestionRequest,
-} from "../acp/XAiAcpExtension.ts";
-import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+  applyGeminiAcpModelSelection,
+  currentGeminiModelIdFromSessionSetup,
+  makeGeminiAcpRuntime,
+  resolveGeminiAcpBaseModelId,
+} from "./GeminiAcpSupport.ts";
+import type { GeminiAdapterShape } from "./GeminiAdapterShape.ts";
+import { expandGeminiCustomCommand, expandGeminiSkillMentions } from "./GeminiCatalog.ts";
+import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+const GeminiPromptQuota = Schema.Struct({
+  quota: Schema.Struct({
+    token_count: Schema.Struct({
+      input_tokens: Schema.Number,
+      output_tokens: Schema.Number,
+    }),
+    model_usage: Schema.Array(
+      Schema.Struct({
+        model: Schema.String,
+        token_count: Schema.Struct({
+          input_tokens: Schema.Number,
+          output_tokens: Schema.Number,
+        }),
+      }),
+    ),
+  }),
+});
+const decodeGeminiPromptQuota = Schema.decodeUnknownOption(GeminiPromptQuota);
 
-const PROVIDER = ProviderDriverKind.make("grok");
-const GROK_RESUME_VERSION = 1 as const;
+const PROVIDER = ProviderDriverKind.make("gemini");
+const GEMINI_RESUME_VERSION = 1 as const;
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
 }
 
-export interface GrokAdapterLiveOptions {
+export interface GeminiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -90,23 +101,15 @@ interface PendingApproval {
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
 }
 
-type PendingUserInputResolution =
-  | { readonly _tag: "answered"; readonly answers: ProviderUserInputAnswers }
-  | { readonly _tag: "cancelled" };
-
-interface PendingUserInput {
-  readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
-}
-
-interface GrokSessionContext {
+interface GeminiSessionContext {
   readonly threadId: ThreadId;
+  readonly cwd: string;
   readonly acpSessionId: string;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
-  readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
@@ -130,18 +133,8 @@ function settlePendingApprovalsAsCancelled(
   );
 }
 
-function settlePendingUserInputsAsCancelled(
-  pendingUserInputs: ReadonlyMap<ApprovalRequestId, PendingUserInput>,
-): Effect.Effect<void> {
-  return Effect.forEach(
-    Array.from(pendingUserInputs.values()),
-    (pending) => Deferred.succeed(pending.resolution, { _tag: "cancelled" }).pipe(Effect.ignore),
-    { discard: true },
-  );
-}
-
 function appendPromptResultToTurn(
-  ctx: GrokSessionContext,
+  ctx: GeminiSessionContext,
   turnId: TurnId,
   promptParts: ReadonlyArray<EffectAcpSchema.ContentBlock>,
   result: EffectAcpSchema.PromptResponse,
@@ -160,21 +153,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const resolveNotificationTurnId = (ctx: GrokSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveNotificationTurnId = (ctx: GeminiSessionContext): TurnId | undefined =>
+  ctx.activeTurnId;
 
-const resolveCallbackTurnId = (ctx: GrokSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveCallbackTurnId = (ctx: GeminiSessionContext): TurnId | undefined => ctx.activeTurnId;
 
 const resolveSessionCallbackTurnId = (
-  sessions: ReadonlyMap<ThreadId, GrokSessionContext>,
+  sessions: ReadonlyMap<ThreadId, GeminiSessionContext>,
   threadId: ThreadId,
 ): TurnId | undefined => {
   const ctx = sessions.get(threadId);
   return ctx ? resolveCallbackTurnId(ctx) : undefined;
 };
 
-function parseGrokResume(raw: unknown): { sessionId: string } | undefined {
+function parseGeminiResume(raw: unknown): { sessionId: string } | undefined {
   if (!isRecord(raw)) return undefined;
-  if (raw.schemaVersion !== GROK_RESUME_VERSION) return undefined;
+  if (raw.schemaVersion !== GEMINI_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   return { sessionId: raw.sessionId.trim() };
 }
@@ -205,13 +199,40 @@ function selectAutoApprovedPermissionOption(
 function completedStopReasonFromPromptResponse(
   response: EffectAcpSchema.PromptResponse | undefined,
 ): EffectAcpSchema.StopReason | null {
-  if (response === undefined || promptResponseHasMissingXAiStopReason(response)) {
+  if (response === undefined) {
     return null;
   }
   return response.stopReason;
 }
 
-export function grokPromptSettlementBelongsToContext(input: {
+function usageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
+  if (response.usage) return response.usage;
+  const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
+  if (!meta) return undefined;
+  const inputTokens = Math.max(0, Math.trunc(meta.quota.token_count.input_tokens));
+  const outputTokens = Math.max(0, Math.trunc(meta.quota.token_count.output_tokens));
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+  } satisfies EffectAcpSchema.Usage;
+}
+
+function modelUsageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
+  const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
+  if (!meta) return undefined;
+  return Object.fromEntries(
+    meta.quota.model_usage.map((usage) => [
+      usage.model,
+      {
+        inputTokens: Math.max(0, Math.trunc(usage.token_count.input_tokens)),
+        outputTokens: Math.max(0, Math.trunc(usage.token_count.output_tokens)),
+      },
+    ]),
+  );
+}
+
+export function geminiPromptSettlementBelongsToContext(input: {
   readonly liveAcpSessionId: string;
   readonly expectedAcpSessionId: string;
   readonly liveActiveTurnId: TurnId | undefined;
@@ -224,9 +245,12 @@ export function grokPromptSettlementBelongsToContext(input: {
   );
 }
 
-export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapterLiveOptions) {
+export function makeGeminiAdapter(
+  geminiSettings: GeminiSettings,
+  options?: GeminiAdapterLiveOptions,
+) {
   return Effect.gen(function* () {
-    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("grok");
+    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("gemini");
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -241,7 +265,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
     const makeAcpNativeLoggers = yield* makeAcpNativeLoggerFactory();
 
-    const sessions = new Map<ThreadId, GrokSessionContext>();
+    const sessions = new Map<ThreadId, GeminiSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -252,7 +276,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "crypto/randomUUIDv4",
-            detail: "Failed to generate Grok runtime identifier.",
+            detail: "Failed to generate Gemini runtime identifier.",
             cause,
           }),
       ),
@@ -264,7 +288,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         Effect.mapError(
           (cause) =>
             new EffectAcpErrors.AcpTransportError({
-              detail: "Failed to process Grok ACP callback.",
+              detail: "Failed to process Gemini ACP callback.",
               cause,
             }),
         ),
@@ -311,7 +335,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         if (!liveCtx) {
           return;
         }
-        const settlementBelongsToLiveContext = grokPromptSettlementBelongsToContext({
+        const settlementBelongsToLiveContext = geminiPromptSettlementBelongsToContext({
           liveAcpSessionId: liveCtx.acpSessionId,
           expectedAcpSessionId,
           liveActiveTurnId: liveCtx.activeTurnId,
@@ -453,7 +477,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to write native Grok notification log.", {
+          Effect.logWarning("Failed to write native Gemini notification log.", {
             cause,
             threadId,
             method,
@@ -462,7 +486,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       );
 
     const emitPlanUpdate = (
-      ctx: GrokSessionContext,
+      ctx: GeminiSessionContext,
       turnId: TurnId | undefined,
       stamp: { readonly eventId: EventId; readonly createdAt: string },
       payload: {
@@ -497,7 +521,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     const requireSession = (
       threadId: ThreadId,
-    ): Effect.Effect<GrokSessionContext, ProviderAdapterSessionNotFoundError> => {
+    ): Effect.Effect<GeminiSessionContext, ProviderAdapterSessionNotFoundError> => {
       const ctx = sessions.get(threadId);
       if (!ctx || ctx.stopped) {
         return Effect.fail(
@@ -507,12 +531,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       return Effect.succeed(ctx);
     };
 
-    const stopSessionInternal = (ctx: GrokSessionContext) =>
+    const stopSessionInternal = (ctx: GeminiSessionContext) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
@@ -527,7 +550,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         });
       });
 
-    const startSession: GrokAdapterShape["startSession"] = (input) =>
+    const startSession: GeminiAdapterShape["startSession"] = (input) =>
       withThreadLock(
         input.threadId,
         Effect.gen(function* () {
@@ -547,7 +570,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           }
 
           const cwd = path.resolve(input.cwd.trim());
-          const grokModelSelection =
+          const geminiModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
@@ -555,14 +578,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           }
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
-          const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
           yield* Effect.addFinalizer(() =>
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
 
-          const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
+          const resumeSessionId = parseGeminiResume(input.resumeCursor)?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -570,8 +592,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
 
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-          const acp = yield* makeGrokAcpRuntime({
-            grokSettings,
+          const acp = yield* makeGeminiAcpRuntime({
+            geminiSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -597,6 +619,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Crypto.Crypto, crypto),
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
             Effect.provideService(Scope.Scope, sessionScope),
             Effect.mapError(
               (cause) =>
@@ -609,60 +633,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ),
           );
           const started = yield* Effect.gen(function* () {
-            yield* Effect.forEach(
-              ["x.ai/ask_user_question", "_x.ai/ask_user_question"] as const,
-              (method) =>
-                acp.handleExtRequest(method, XAiAskUserQuestionRequest, (params) =>
-                  mapAcpCallbackFailure(
-                    Effect.gen(function* () {
-                      yield* logNative(input.threadId, method, params);
-                      const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-                      const runtimeRequestId = RuntimeRequestId.make(requestId);
-                      const resolution = yield* Deferred.make<PendingUserInputResolution>();
-                      const turnId = resolveSessionCallbackTurnId(sessions, input.threadId);
-                      pendingUserInputs.set(requestId, { resolution });
-                      yield* offerRuntimeEvent({
-                        type: "user-input.requested",
-                        ...(yield* makeEventStamp()),
-                        provider: PROVIDER,
-                        threadId: input.threadId,
-                        turnId,
-                        requestId: runtimeRequestId,
-                        payload: { questions: extractXAiAskUserQuestions(params) },
-                        raw: {
-                          source: "acp.grok.extension",
-                          method,
-                          payload: params,
-                        },
-                      });
-                      const resolved = yield* Deferred.await(resolution);
-                      pendingUserInputs.delete(requestId);
-                      const resolvedAnswers = resolved._tag === "answered" ? resolved.answers : {};
-                      yield* offerRuntimeEvent({
-                        type: "user-input.resolved",
-                        ...(yield* makeEventStamp()),
-                        provider: PROVIDER,
-                        threadId: input.threadId,
-                        turnId,
-                        requestId: runtimeRequestId,
-                        payload: { answers: resolvedAnswers },
-                        raw: {
-                          source: "acp.grok.extension",
-                          method,
-                          payload: params,
-                        },
-                      });
-                      switch (resolved._tag) {
-                        case "answered":
-                          return makeXAiAskUserQuestionResponse(params, resolved.answers);
-                        case "cancelled":
-                          return makeXAiAskUserQuestionCancelledResponse();
-                      }
-                    }),
-                  ),
-                ),
-              { discard: true },
-            );
             yield* acp.handleRequestPermission((params) =>
               mapAcpCallbackFailure(
                 Effect.gen(function* () {
@@ -735,12 +705,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ),
           );
 
-          const requestedStartModelId = grokModelSelection?.model
-            ? resolveGrokAcpBaseModelId(grokModelSelection.model)
+          const requestedStartModelId = geminiModelSelection?.model
+            ? resolveGeminiAcpBaseModelId(geminiModelSelection.model)
             : undefined;
-          const boundModelId = yield* applyGrokAcpModelSelection({
+          const boundModelId = yield* applyGeminiAcpModelSelection({
             runtime: acp,
-            currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
+            currentModelId: currentGeminiModelIdFromSessionSetup(started.sessionSetupResult),
             requestedModelId: requestedStartModelId,
             mapError: (cause) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
@@ -753,25 +723,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             status: "ready",
             runtimeMode: input.runtimeMode,
             cwd,
-            ...(boundModelId ? { model: resolveGrokAcpBaseModelId(boundModelId) } : {}),
+            ...(boundModelId ? { model: resolveGeminiAcpBaseModelId(boundModelId) } : {}),
             threadId: input.threadId,
             resumeCursor: {
-              schemaVersion: GROK_RESUME_VERSION,
+              schemaVersion: GEMINI_RESUME_VERSION,
               sessionId: started.sessionId,
             },
             createdAt: now,
             updatedAt: now,
           };
 
-          const ctx: GrokSessionContext = {
+          const ctx: GeminiSessionContext = {
             threadId: input.threadId,
+            cwd,
             acpSessionId: started.sessionId,
             session,
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
             pendingApprovals,
-            pendingUserInputs,
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
@@ -875,7 +845,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ),
           ).pipe(
             Effect.catch((cause) =>
-              Effect.logError("Failed to process Grok runtime notification.", { cause }),
+              Effect.logError("Failed to process Gemini runtime notification.", { cause }),
             ),
             Effect.forkChild,
           );
@@ -896,7 +866,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ...(yield* makeEventStamp()),
             provider: PROVIDER,
             threadId: input.threadId,
-            payload: { state: "ready", reason: "Grok ACP session ready" },
+            payload: { state: "ready", reason: "Gemini ACP session ready" },
           });
           yield* offerRuntimeEvent({
             type: "thread.started",
@@ -910,7 +880,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }).pipe(Effect.scoped),
       );
 
-    const sendTurn: GrokAdapterShape["sendTurn"] = (input) =>
+    const sendTurn: GeminiAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const prepared = yield* withThreadLock(
           input.threadId,
@@ -941,9 +911,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ? input.modelSelection
                   : undefined;
               const requestedTurnModelId = turnModelSelection?.model
-                ? resolveGrokAcpBaseModelId(turnModelSelection.model)
+                ? resolveGeminiAcpBaseModelId(turnModelSelection.model)
                 : undefined;
-              const currentModelId = yield* applyGrokAcpModelSelection({
+              const currentModelId = yield* applyGeminiAcpModelSelection({
                 runtime: ctx.acp,
                 currentModelId: ctx.currentModelId,
                 requestedModelId: requestedTurnModelId,
@@ -951,7 +921,26 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
               });
 
-              const text = input.input?.trim();
+              const rawText = input.input?.trim();
+              const text = rawText
+                ? (yield* expandGeminiCustomCommand(
+                    geminiSettings,
+                    ctx.cwd,
+                    rawText,
+                    options?.environment,
+                  ).pipe(
+                    Effect.flatMap((expanded) =>
+                      expandGeminiSkillMentions(
+                        geminiSettings,
+                        ctx.cwd,
+                        expanded,
+                        options?.environment,
+                      ),
+                    ),
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                  )).trim()
+                : undefined;
               const imagePromptParts = yield* Effect.forEach(
                 input.attachments ?? [],
                 (attachment) =>
@@ -1000,7 +989,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
               ctx.currentModelId = currentModelId;
               const displayModel = currentModelId
-                ? resolveGrokAcpBaseModelId(currentModelId)
+                ? resolveGeminiAcpBaseModelId(currentModelId)
                 : undefined;
               for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
                 yield* Effect.yieldNow;
@@ -1014,7 +1003,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "session/prompt",
-                  detail: "Grok prompt was interrupted during preparation.",
+                  detail: "Gemini prompt was interrupted during preparation.",
                 });
               }
               if (steeringTurnId === undefined) {
@@ -1054,7 +1043,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     return;
                   }
                   yield* settlePromptInFlight(input.threadId, turnId, liveCtx.acpSessionId, {
-                    errorMessage: "Grok prompt preparation failed.",
+                    errorMessage: "Gemini prompt preparation failed.",
                     emitTurnCompletion: false,
                   });
                 }),
@@ -1103,7 +1092,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   prepared.turnId,
                   prepared.acpSessionId,
                   {
-                    errorMessage: "Grok session changed before the turn completed.",
+                    errorMessage: "Gemini session changed before the turn completed.",
                     settleAllPrompts: true,
                   },
                 );
@@ -1111,7 +1100,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "session/prompt",
-                  detail: "Grok session changed before the turn completed.",
+                  detail: "Gemini session changed before the turn completed.",
                 });
               }
               // Keep prompt settlement atomic with respect to Stop and steering.
@@ -1180,6 +1169,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
                 };
                 const completedStopReason = completedStopReasonFromPromptResponse(result);
+                const usage = usageFromGeminiPromptResponse(result);
+                const modelUsage = modelUsageFromGeminiPromptResponse(result);
+                if (usage) {
+                  yield* offerRuntimeEvent({
+                    type: "thread.token-usage.updated",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: {
+                      usage: {
+                        usedTokens: usage.totalTokens,
+                        totalProcessedTokens: usage.totalTokens,
+                        inputTokens: usage.inputTokens,
+                        cachedInputTokens: usage.cachedReadTokens ?? 0,
+                        outputTokens: usage.outputTokens,
+                        reasoningOutputTokens: usage.thoughtTokens ?? 0,
+                        lastUsedTokens: usage.totalTokens,
+                        lastInputTokens: usage.inputTokens,
+                        lastCachedInputTokens: usage.cachedReadTokens ?? 0,
+                        lastOutputTokens: usage.outputTokens,
+                        lastReasoningOutputTokens: usage.thoughtTokens ?? 0,
+                      },
+                    },
+                  });
+                }
                 yield* offerRuntimeEvent({
                   type: "turn.completed",
                   ...(yield* makeEventStamp()),
@@ -1189,6 +1204,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   payload: {
                     state: result.stopReason === "cancelled" ? "cancelled" : "completed",
                     stopReason: completedStopReason,
+                    ...(usage ? { usage } : {}),
+                    ...(modelUsage ? { modelUsage } : {}),
                   },
                 });
                 ctx.interruptedTurnIds.delete(prepared.turnId);
@@ -1226,7 +1243,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         prepared.turnId,
                         prepared.acpSessionId,
                         {
-                          errorMessage: "Grok session changed before the turn completed.",
+                          errorMessage: "Gemini session changed before the turn completed.",
                           settleAllPrompts: true,
                         },
                       );
@@ -1265,7 +1282,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               yield* withThreadLock(
                 input.threadId,
                 settlePromptInFlight(input.threadId, prepared.turnId, prepared.acpSessionId, {
-                  errorMessage: errorMessage ?? "Grok prompt request failed.",
+                  errorMessage: errorMessage ?? "Gemini prompt request failed.",
                 }),
               );
             }).pipe(Effect.catch(() => Effect.void)),
@@ -1273,7 +1290,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId) =>
+    const interruptTurn: GeminiAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
         const observed = yield* Effect.sync(() => {
           const ctx = sessions.get(threadId);
@@ -1323,7 +1340,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             const interruptedTurnId =
               observed.interruptedTurnId ?? turnId ?? activeTurnId ?? ctx.session.activeTurnId;
             yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-            yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
             yield* Effect.ignore(
               ctx.acp.cancel.pipe(
                 Effect.mapError((error) =>
@@ -1356,7 +1372,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    const respondToRequest: GrokAdapterShape["respondToRequest"] = (
+    const respondToRequest: GeminiAdapterShape["respondToRequest"] = (
       threadId,
       requestId,
       decision,
@@ -1374,31 +1390,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         yield* Deferred.succeed(pending.decision, decision);
       });
 
-    const respondToUserInput: GrokAdapterShape["respondToUserInput"] = (
+    const respondToUserInput: GeminiAdapterShape["respondToUserInput"] = (
       threadId,
-      requestId,
-      answers,
+      _requestId,
+      _answers,
     ) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        const pending = ctx.pendingUserInputs.get(requestId);
-        if (!pending) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "_x.ai/ask_user_question",
-            detail: `Unknown pending user-input request: ${requestId}`,
-          });
-        }
-        yield* Deferred.succeed(pending.resolution, { _tag: "answered", answers });
+        yield* requireSession(threadId);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session/elicitation",
+          detail: "Gemini ACP does not currently expose structured user-input requests.",
+        });
       });
 
-    const readThread: GrokAdapterShape["readThread"] = (threadId) =>
+    const readThread: GeminiAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
         return { threadId, turns: ctx.turns };
       });
 
-    const rollbackThread: GrokAdapterShape["rollbackThread"] = (threadId, numTurns) =>
+    const rollbackThread: GeminiAdapterShape["rollbackThread"] = (threadId, numTurns) =>
       Effect.gen(function* () {
         yield* requireSession(threadId);
         if (!Number.isInteger(numTurns) || numTurns < 1) {
@@ -1411,11 +1423,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         return yield* new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "thread/rollback",
-          detail: "Grok ACP sessions do not support provider-side rollback yet.",
+          detail: "Gemini ACP sessions do not support provider-side rollback yet.",
         });
       });
 
-    const stopSession: GrokAdapterShape["stopSession"] = (threadId) =>
+    const stopSession: GeminiAdapterShape["stopSession"] = (threadId) =>
       withThreadLock(
         threadId,
         Effect.gen(function* () {
@@ -1424,16 +1436,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }),
       );
 
-    const listSessions: GrokAdapterShape["listSessions"] = () =>
+    const listSessions: GeminiAdapterShape["listSessions"] = () =>
       Effect.sync(() => Array.from(sessions.values(), (c) => ({ ...c.session })));
 
-    const hasSession: GrokAdapterShape["hasSession"] = (threadId) =>
+    const hasSession: GeminiAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
         const c = sessions.get(threadId);
         return c !== undefined && !c.stopped;
       });
 
-    const stopAll: GrokAdapterShape["stopAll"] = () =>
+    const stopAll: GeminiAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
     yield* Effect.addFinalizer(() =>
@@ -1460,6 +1472,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       hasSession,
       stopAll,
       streamEvents,
-    } satisfies GrokAdapterShape;
+    } satisfies GeminiAdapterShape;
   });
 }

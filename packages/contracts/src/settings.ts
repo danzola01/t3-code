@@ -212,7 +212,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 // import cycle; re-exported here for compatibility with deep imports.
 export { ThreadEnvMode } from "./environment.ts";
 
-const makeBinaryPathSetting = (fallback: string) =>
+export const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
     Schema.decodeTo(
       Schema.String,

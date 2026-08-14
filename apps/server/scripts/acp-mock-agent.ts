@@ -21,6 +21,7 @@ const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
+const emitGeminiUsage = process.env.T3_ACP_EMIT_GEMINI_USAGE === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
@@ -712,7 +713,24 @@ const program = Effect.gen(function* () {
           },
         });
 
-        return { stopReason: cancelled ? "cancelled" : "end_turn" };
+        return {
+          stopReason: cancelled ? "cancelled" : "end_turn",
+          ...(emitGeminiUsage
+            ? {
+                _meta: {
+                  quota: {
+                    token_count: { input_tokens: 12, output_tokens: 8 },
+                    model_usage: [
+                      {
+                        model: "grok-mock-alt",
+                        token_count: { input_tokens: 12, output_tokens: 8 },
+                      },
+                    ],
+                  },
+                },
+              }
+            : {}),
+        };
       }
 
       if (emitGenericToolPlaceholders) {
