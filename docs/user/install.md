@@ -17,6 +17,12 @@ npx t3@latest
 This starts the T3 Code server on your machine and opens the local web app. Use
 `npx t3@latest --help` for the full CLI reference.
 
+## Anonymous Telemetry
+
+Anonymous product analytics are disabled by default. To explicitly opt in, set
+`T3CODE_TELEMETRY_ENABLED=true` when starting the T3 Code server. This setting does not affect
+local resource diagnostics or observability exports that you configure separately.
+
 ## Desktop App
 
 Download the latest release from

@@ -4,6 +4,8 @@ import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as HttpServer from "effect/unstable/http/HttpServer";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -36,6 +38,37 @@ interface RecordedBatchBody {
 }
 
 it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
+  it.effect("does not send telemetry by default", () =>
+    Effect.gen(function* () {
+      let requestCount = 0;
+      const serverConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+        prefix: "t3-telemetry-disabled-",
+      });
+      const httpClientLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() => {
+            requestCount += 1;
+            return HttpClientResponse.fromWeb(request, new Response("", { status: 200 }));
+          }),
+        ),
+      );
+      const telemetryLayer = AnalyticsService.layer.pipe(
+        Layer.provideMerge(serverConfigLayer),
+        Layer.provide(httpClientLayer),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+      );
+
+      yield* Effect.gen(function* () {
+        const analytics = yield* AnalyticsService.AnalyticsService;
+        yield* analytics.record("test.disabled.default");
+        yield* analytics.flush;
+      }).pipe(Effect.provide(telemetryLayer));
+
+      assert.equal(requestCount, 0);
+    }),
+  );
+
   it.effect("flush drains all buffered events across multiple batches", () =>
     Effect.gen(function* () {
       const capturedRequests: Array<RecordedBatchRequest> = [];
