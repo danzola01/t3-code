@@ -274,6 +274,55 @@ describe("buildThreadFeed", () => {
     );
   });
 
+  it("shows raw provider command input like desktop", () => {
+    const turnId = TurnId.make("turn-raw-command");
+    const thread = makeThread({
+      id: ThreadId.make("thread-raw-command"),
+      projectId: ProjectId.make("project-1"),
+      title: "Raw command input",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:03.000Z",
+        assistantMessageId: null,
+      },
+      activities: [
+        makeActivity({
+          id: EventId.make("raw-command"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Ran command",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: {
+            title: "Ran command",
+            itemType: "command_execution",
+            status: "completed",
+            data: {
+              kind: "execute",
+              rawInput: { cmd: "vp test run threadActivity.test.ts" },
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [
+          {
+            summary: "Ran command",
+            detail: "vp test run threadActivity.test.ts",
+            canExpand: true,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("keeps MCP inputs available to expanded mobile work rows", () => {
     const turnId = TurnId.make("turn-mcp");
     const thread = makeThread({

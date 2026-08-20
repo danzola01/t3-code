@@ -8,6 +8,7 @@ import type {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { extractToolCommand as extractSharedToolCommand } from "@t3tools/shared/toolActivity";
 
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -891,6 +892,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
     itemInput?.command,
     itemResult?.command,
     data?.command,
+    extractSharedToolCommand(data, asTrimmedString(payload?.title)),
     itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
   ];
 

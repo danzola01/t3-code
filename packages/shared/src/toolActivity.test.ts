@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveToolActivityPresentation } from "./toolActivity.ts";
+import { deriveToolActivityPresentation, extractToolCommand } from "./toolActivity.ts";
 
 describe("toolActivity", () => {
   it("normalizes command tools to a stable ran-command label", () => {
@@ -18,6 +18,15 @@ describe("toolActivity", () => {
       summary: "Ran command",
       detail: "bun run lint",
     });
+  });
+
+  it("extracts command aliases and executable arguments from provider input", () => {
+    expect(extractToolCommand({ rawInput: { cmd: "vp test run session.test.ts" } })).toBe(
+      "vp test run session.test.ts",
+    );
+    expect(
+      extractToolCommand({ rawInput: { executable: "vp", args: ["test", "run", "two words.ts"] } }),
+    ).toBe('vp test run "two words.ts"');
   });
 
   it("uses structured file paths for read-file tools when available", () => {

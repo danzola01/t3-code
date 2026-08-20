@@ -3,6 +3,7 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
 } from "@t3tools/contracts";
+import { extractToolCommand } from "@t3tools/shared/toolActivity";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -339,8 +340,18 @@ export function projectActivityPayload(
   if (item) {
     projectedData.item = item;
   }
-  if ("command" in data) {
+  const directCommand = extractToolCommand({ command: data.command });
+  const itemCommand = extractToolCommand({ item });
+  if (directCommand) {
     projectedData.command = data.command;
+  } else if (
+    !itemCommand &&
+    (payload.itemType === "command_execution" || data.kind === "execute")
+  ) {
+    const fallbackCommand = extractToolCommand(data, asTrimmedString(payload.title));
+    if (fallbackCommand) {
+      projectedData.command = fallbackCommand;
+    }
   }
 
   const changedFiles: string[] = [];

@@ -1,6 +1,7 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
+import { extractToolCommand as extractSharedToolCommand } from "@t3tools/shared/toolActivity";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -1296,6 +1297,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
     itemInput?.command,
     itemResult?.command,
     data?.command,
+    extractSharedToolCommand(data, asTrimmedString(payload?.title)),
     itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
   ];
 

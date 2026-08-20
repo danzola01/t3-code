@@ -97,6 +97,26 @@ describe("projectActivityPayload agent-field survival", () => {
     expect(JSON.stringify(acp.payload).length).toBeLessThan(500);
   });
 
+  it("canonicalizes provider command input before slimming the payload", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        data: {
+          toolCallId: "tool-command-1",
+          kind: "execute",
+          rawInput: { cmd: "vp test run session-logic.test.ts" },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+
+    expect(data).toEqual({
+      toolCallId: "tool-command-1",
+      kind: "execute",
+      command: "vp test run session-logic.test.ts",
+    });
+  });
+
   it("slims Codex-shaped mcp_tool_call items to rendered fields plus a result summary", () => {
     const projected = projectActivityPayload(
       activity({

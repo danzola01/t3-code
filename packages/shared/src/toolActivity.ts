@@ -14,6 +14,10 @@ function asTrimmedString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function formatCommandArrayPart(value: string): string {
+  return /[\s"'`]/u.test(value) ? `"${value.replace(/"/gu, '\\"')}"` : value;
+}
+
 function normalizeCommandValue(value: unknown): string | undefined {
   const direct = asTrimmedString(value);
   if (direct) {
@@ -29,7 +33,7 @@ function normalizeCommandValue(value: unknown): string | undefined {
       parts.push(part);
     }
   }
-  return parts.length > 0 ? parts.join(" ") : undefined;
+  return parts.length > 0 ? parts.map(formatCommandArrayPart).join(" ") : undefined;
 }
 
 function stripTrailingExitCode(value: string | undefined): string | undefined {
@@ -50,29 +54,56 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return backtickMatch?.[1]?.trim() || undefined;
 }
 
-function extractToolCommand(data: Record<string, unknown> | undefined, title: string | undefined) {
+function extractExecutableCommand(input: Record<string, unknown> | undefined): string | undefined {
+  const executable = asTrimmedString(input?.executable);
+  if (!executable) {
+    return undefined;
+  }
+  const args = normalizeCommandValue(input?.args);
+  return args ? `${formatCommandArrayPart(executable)} ${args}` : executable;
+}
+
+function extractCommandActions(item: Record<string, unknown> | undefined): string | undefined {
+  if (!Array.isArray(item?.commandActions)) {
+    return undefined;
+  }
+  const commands = item.commandActions
+    .map((action) => normalizeCommandValue(asRecord(action)?.command))
+    .filter((command): command is string => command !== undefined);
+  return commands.length > 0 ? commands.join(" && ") : undefined;
+}
+
+export function extractToolCommand(
+  dataValue: unknown,
+  titleValue?: string | null | undefined,
+): string | undefined {
+  const data = asRecord(dataValue);
+  const title = asTrimmedString(titleValue);
   const item = asRecord(data?.item);
   const itemInput = asRecord(item?.input);
   const itemResult = asRecord(item?.result);
+  const input = asRecord(data?.input);
   const rawInput = asRecord(data?.rawInput);
   const candidates = [
     normalizeCommandValue(item?.command),
     normalizeCommandValue(itemInput?.command),
+    normalizeCommandValue(itemInput?.cmd),
     normalizeCommandValue(itemResult?.command),
     normalizeCommandValue(data?.command),
+    normalizeCommandValue(data?.cmd),
+    normalizeCommandValue(input?.command),
+    normalizeCommandValue(input?.cmd),
     normalizeCommandValue(rawInput?.command),
+    normalizeCommandValue(rawInput?.cmd),
+    normalizeCommandValue(data?.rawInput),
+    extractExecutableCommand(itemInput),
+    extractExecutableCommand(input),
+    extractExecutableCommand(rawInput),
+    extractCommandActions(item),
   ];
   const direct = candidates.find((candidate) => candidate !== undefined);
   if (direct) {
     return direct;
-  }
-  const executable = asTrimmedString(rawInput?.executable);
-  const args = normalizeCommandValue(rawInput?.args);
-  if (executable && args) {
-    return `${executable} ${args}`;
-  }
-  if (executable) {
-    return executable;
   }
   return extractCommandFromTitle(title);
 }

@@ -82,4 +82,21 @@ describe("deriveWorkLogEntries command output", () => {
     expect(entry?.command).toBe("true");
     expect(entry?.detail).toBeUndefined();
   });
+
+  it("uses raw provider command input when no canonical command was supplied", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeCommandActivity("raw-input-command", {
+        itemType: "command_execution",
+        title: "Ran command",
+        data: {
+          kind: "execute",
+          rawInput: { cmd: "vp test run session-logic.test.ts" },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      command: "vp test run session-logic.test.ts",
+    });
+  });
 });
