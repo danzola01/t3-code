@@ -10,6 +10,7 @@ import {
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
+  TextGenerationError,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
@@ -42,11 +43,13 @@ import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import {
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelection,
   ServerSettingsService,
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isTextGenerationError = Schema.is(TextGenerationError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
@@ -333,7 +336,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "thread.title.regeneration.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -373,6 +377,12 @@ const make = Effect.gen(function* () {
       : undefined;
     if (providerError) {
       return providerError.detail;
+    }
+    const textGenerationError = isTextGenerationError(failReason?.error)
+      ? failReason.error
+      : undefined;
+    if (textGenerationError) {
+      return textGenerationError.message;
     }
     return Cause.pretty(cause);
   };
@@ -802,13 +812,10 @@ const make = Effect.gen(function* () {
     const attachments = input.attachments ?? [];
     yield* Effect.gen(function* () {
       const settings = yield* serverSettingsService.getSettings;
-      const modelSelection =
-        settings.sourceControlWriterModelSelection === null
-          ? settings.textGenerationModelSelection
-          : resolveSourceControlWriterModelSelection(
-              settings,
-              yield* providerRegistry.getProviders,
-            );
+      const modelSelection = resolveSourceControlWriterModelSelection(
+        settings,
+        yield* providerRegistry.getProviders,
+      );
 
       const generated = yield* textGeneration.generateBranchName({
         cwd,
@@ -852,8 +859,11 @@ const make = Effect.gen(function* () {
     }) {
       const attachments = input.attachments ?? [];
       yield* Effect.gen(function* () {
-        const { textGenerationModelSelection: modelSelection } =
-          yield* serverSettingsService.getSettings;
+        const settings = yield* serverSettingsService.getSettings;
+        const modelSelection = resolveTextGenerationModelSelection(
+          settings,
+          yield* providerRegistry.getProviders,
+        );
 
         const generated = yield* textGeneration.generateThreadTitle({
           cwd: input.cwd,
@@ -915,8 +925,11 @@ const make = Effect.gen(function* () {
         thread,
         projects: project ? [project] : [],
       }) ?? process.cwd();
-    const { textGenerationModelSelection: modelSelection } =
-      yield* serverSettingsService.getSettings;
+    const settings = yield* serverSettingsService.getSettings;
+    const modelSelection = resolveTextGenerationModelSelection(
+      settings,
+      yield* providerRegistry.getProviders,
+    );
     const generated = yield* textGeneration.generateThreadTitle({
       cwd,
       message,
@@ -1007,10 +1020,33 @@ const make = Effect.gen(function* () {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
           }
+          const detail = formatFailureDetail(cause);
           return Effect.logWarning("provider command reactor failed to regenerate thread title", {
             threadId: event.payload.threadId,
             cause: Cause.pretty(cause),
-          }).pipe(Effect.as({ _tag: "Completed", title: undefined } as const));
+          }).pipe(
+            Effect.andThen(
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "thread.title.regeneration.failed",
+                summary: "Thread title regeneration failed",
+                detail,
+                turnId: null,
+                createdAt: event.payload.titleRegeneration?.startedAt ?? event.occurredAt,
+              }).pipe(
+                Effect.catchCause((activityCause) =>
+                  Effect.logWarning(
+                    "provider command reactor failed to record title regeneration failure",
+                    {
+                      threadId: event.payload.threadId,
+                      cause: Cause.pretty(activityCause),
+                    },
+                  ),
+                ),
+              ),
+            ),
+            Effect.as({ _tag: "Completed", title: undefined } as const),
+          );
         }),
       );
       if (result._tag === "Superseded") {

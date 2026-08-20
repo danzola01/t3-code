@@ -1,4 +1,7 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_TEXT_GENERATION_MODEL,
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   isProviderDriverKind,
   isProviderAvailable,
   type ModelSelection,
@@ -45,22 +48,77 @@ export function isModelSelectionProviderEnabled(
   );
 }
 
+function canRunTextGeneration(provider: ServerProvider): boolean {
+  return (
+    provider.enabled &&
+    provider.installed &&
+    isProviderAvailable(provider) &&
+    provider.status !== "error" &&
+    provider.status !== "disabled" &&
+    provider.auth.status !== "unauthenticated"
+  );
+}
+
+function fallbackTextGenerationModel(provider: ServerProvider): string {
+  return (
+    DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver] ??
+    provider.models.find((model) => model.isDefault === true)?.slug ??
+    DEFAULT_MODEL_BY_PROVIDER[provider.driver] ??
+    provider.models[0]?.slug ??
+    DEFAULT_TEXT_GENERATION_MODEL
+  );
+}
+
+/**
+ * Keep the configured text-generation selection when it can run. Otherwise,
+ * route this operation through the first healthy provider without mutating the
+ * persisted preference, so a recovered provider becomes active again later.
+ */
+export function resolveTextGenerationModelSelection(
+  settings: ServerSettings,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection {
+  const configured = settings.textGenerationModelSelection;
+  const selectedProvider = providers.find(
+    (provider) => provider.instanceId === configured.instanceId,
+  );
+  if (selectedProvider && canRunTextGeneration(selectedProvider)) {
+    return configured;
+  }
+
+  const fallback =
+    providers.find((provider) => provider.status === "ready" && canRunTextGeneration(provider)) ??
+    providers.find(canRunTextGeneration);
+  if (!fallback) {
+    // Preserve the requested provider so TextGeneration can return its typed,
+    // actionable error when no viable fallback exists.
+    return configured;
+  }
+
+  return {
+    instanceId: fallback.instanceId,
+    model: fallbackTextGenerationModel(fallback),
+  };
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers?: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
   const selection = settings.sourceControlWriterModelSelection;
+  const fallback =
+    providers === undefined
+      ? settings.textGenerationModelSelection
+      : resolveTextGenerationModelSelection(settings, providers);
   if (!selection || !isModelSelectionProviderEnabled(settings, selection)) {
-    return settings.textGenerationModelSelection;
+    return fallback;
   }
   if (providers === undefined) {
     return selection;
   }
 
   const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
-  return provider?.enabled === true && isProviderAvailable(provider)
-    ? selection
-    : settings.textGenerationModelSelection;
+  return provider && canRunTextGeneration(provider) ? selection : fallback;
 }
 
 export interface PersistedServerObservabilitySettings {

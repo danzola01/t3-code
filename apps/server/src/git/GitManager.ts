@@ -2176,23 +2176,17 @@ export const make = Effect.gen(function* () {
         let commitMessageForStep = input.commitMessage;
         let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
 
-        const textGenerationSettings = yield* serverSettingsService.getSettings.pipe(
-          Effect.flatMap((settings) =>
-            settings.sourceControlWriterModelSelection === null
-              ? Effect.succeed({
-                  modelSelection: settings.textGenerationModelSelection,
-                  style: settings.sourceControlWritingStyle,
-                })
-              : providerRegistry.getProviders.pipe(
-                  Effect.map((providers) => ({
-                    modelSelection: ServerSettings.resolveSourceControlWriterModelSelection(
-                      settings,
-                      providers,
-                    ),
-                    style: settings.sourceControlWritingStyle,
-                  })),
-                ),
-          ),
+        const textGenerationSettings = yield* Effect.all({
+          settings: serverSettingsService.getSettings,
+          providers: providerRegistry.getProviders,
+        }).pipe(
+          Effect.map(({ settings, providers }) => ({
+            modelSelection: ServerSettings.resolveSourceControlWriterModelSelection(
+              settings,
+              providers,
+            ),
+            style: settings.sourceControlWritingStyle,
+          })),
           Effect.mapError(
             (cause) =>
               new GitManagerError({

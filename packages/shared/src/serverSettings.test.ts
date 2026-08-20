@@ -15,7 +15,29 @@ import {
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelection,
 } from "./serverSettings.ts";
+
+function providerSnapshot(
+  instanceId: string,
+  driver: string,
+  overrides: Partial<ServerProvider> = {},
+): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make(driver),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-08-20T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...overrides,
+  };
+}
 
 describe("serverSettings helpers", () => {
   it("normalizes optional persisted strings", () => {
@@ -227,6 +249,91 @@ describe("serverSettings helpers", () => {
       settings.textGenerationModelSelection,
     );
     expect(settings.sourceControlWriterModelSelection).toBe(sourceControlWriterModelSelection);
+  });
+
+  it("routes text generation away from an unhealthy configured provider", () => {
+    const claudeInstanceId = ProviderInstanceId.make("claude_personal");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.6-luna",
+        [{ id: "reasoningEffort", value: "low" }],
+      ),
+    };
+
+    expect(
+      resolveTextGenerationModelSelection(settings, [
+        providerSnapshot("codex", "codex", {
+          status: "error",
+          message: "Codex provider probe failed.",
+        }),
+        providerSnapshot(claudeInstanceId, "claudeAgent"),
+      ]),
+    ).toEqual({
+      instanceId: claudeInstanceId,
+      model: "claude-haiku-4-5",
+    });
+  });
+
+  it("keeps a configured text generation provider with a non-fatal warning", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna", [
+      { id: "reasoningEffort", value: "low" },
+    ]);
+    const settings = { ...DEFAULT_SERVER_SETTINGS, textGenerationModelSelection: selection };
+
+    expect(
+      resolveTextGenerationModelSelection(settings, [
+        providerSnapshot("codex", "codex", {
+          status: "warning",
+          auth: { status: "unknown" },
+        }),
+      ]),
+    ).toBe(selection);
+  });
+
+  it("preserves the configured selection when no text generation fallback can run", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna");
+    const settings = { ...DEFAULT_SERVER_SETTINGS, textGenerationModelSelection: selection };
+
+    expect(
+      resolveTextGenerationModelSelection(settings, [
+        providerSnapshot("codex", "codex", { status: "error" }),
+        providerSnapshot("claudeAgent", "claudeAgent", {
+          enabled: false,
+          status: "disabled",
+        }),
+      ]),
+    ).toBe(selection);
+  });
+
+  it("uses the healthy text generation fallback for an unhealthy source control writer", () => {
+    const sourceControlWriterModelSelection = createModelSelection(
+      ProviderInstanceId.make("opencode_writer"),
+      "openai/gpt-5",
+    );
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        opencode_writer: {
+          driver: ProviderDriverKind.make("opencode"),
+          enabled: true,
+          config: {},
+        },
+      },
+      sourceControlWriterModelSelection,
+    };
+
+    expect(
+      resolveSourceControlWriterModelSelection(settings, [
+        providerSnapshot("codex", "codex", { status: "error" }),
+        providerSnapshot("opencode_writer", "opencode", { status: "error" }),
+        providerSnapshot("claudeAgent", "claudeAgent"),
+      ]),
+    ).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-haiku-4-5",
+    });
   });
 
   it("falls back from an unavailable source control writer provider", () => {

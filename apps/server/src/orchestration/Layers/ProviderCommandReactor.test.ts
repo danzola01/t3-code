@@ -1027,6 +1027,15 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Keep title after failure");
     expect(thread?.titleRegeneration).toBeNull();
+    expect(
+      thread?.activities.find((activity) => activity.kind === "thread.title.regeneration.failed"),
+    ).toMatchObject({
+      tone: "error",
+      summary: "Thread title regeneration failed",
+      payload: {
+        detail: "Text generation failed in generateThreadTitle: disabled in test harness",
+      },
+    });
   });
 
   it("retries a failed completion and continues regenerating", async () => {
