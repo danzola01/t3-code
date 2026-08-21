@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -50,7 +51,7 @@ import {
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
 } from "../acp/AcpCoreRuntimeEvents.ts";
-import { parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+import { type AcpToolCallState, parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyGeminiAcpModelSelection,
@@ -63,6 +64,7 @@ import { expandGeminiCustomCommand, expandGeminiSkillMentions } from "./GeminiCa
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+const decodeUnknownJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const GeminiPromptQuota = Schema.Struct({
   quota: Schema.Struct({
     token_count: Schema.Struct({
@@ -84,6 +86,27 @@ const decodeGeminiPromptQuota = Schema.decodeUnknownOption(GeminiPromptQuota);
 
 const PROVIDER = ProviderDriverKind.make("gemini");
 const GEMINI_RESUME_VERSION = 1 as const;
+const GEMINI_PROMPT_RETRY_ATTEMPTS = 2;
+const GEMINI_PROMPT_RETRY_DELAY = "1 second";
+const GEMINI_CAPACITY_ERROR_DETAIL =
+  "Gemini is temporarily out of capacity. T3 Code retried the request, but the model is still unavailable. Try again shortly or choose another model.";
+
+function isRetryableGeminiCapacityError(error: EffectAcpErrors.AcpError): boolean {
+  const message = error.message.toLowerCase();
+  return message.includes("no capacity available") || message.includes("model is overloaded");
+}
+
+function mapGeminiPromptError(threadId: ThreadId, error: EffectAcpErrors.AcpError) {
+  if (isRetryableGeminiCapacityError(error)) {
+    return new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method: "session/prompt",
+      detail: GEMINI_CAPACITY_ERROR_DETAIL,
+      cause: error,
+    });
+  }
+  return mapAcpToAdapterError(PROVIDER, threadId, "session/prompt", error);
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -151,6 +174,86 @@ function appendPromptResultToTurn(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface GeminiMcpToolIdentity {
+  readonly server: string;
+  readonly tool: string;
+}
+
+function parseGeminiMcpToolTitle(
+  title: string | null | undefined,
+): GeminiMcpToolIdentity | undefined {
+  const match = /^(?<tool>.+) \((?<server>.+) MCP Server\)$/u.exec(title ?? "");
+  const tool = match?.groups?.tool?.trim();
+  const server = match?.groups?.server?.trim();
+  return tool && server ? { server, tool } : undefined;
+}
+
+function textFromAcpToolContent(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const chunks: string[] = [];
+  for (const entryValue of value) {
+    if (!isRecord(entryValue) || entryValue.type !== "content") {
+      continue;
+    }
+    const content = isRecord(entryValue.content) ? entryValue.content : undefined;
+    const text = typeof content?.text === "string" ? content.text.trim() : "";
+    if (content?.type === "text" && text.length > 0) {
+      chunks.push(text);
+    }
+  }
+  return chunks.length > 0 ? chunks.join("\n") : undefined;
+}
+
+function geminiMcpArguments(rawInput: unknown, content: unknown): unknown | undefined {
+  if (rawInput !== undefined) {
+    return rawInput;
+  }
+  const text = textFromAcpToolContent(content);
+  return text ? Option.getOrUndefined(decodeUnknownJsonString(text)) : undefined;
+}
+
+function normalizeGeminiMcpToolCall(
+  toolCall: AcpToolCallState,
+  rememberedArguments: unknown,
+): AcpToolCallState {
+  const identity = parseGeminiMcpToolTitle(toolCall.title);
+  if (!identity) {
+    return toolCall;
+  }
+
+  const { content, initialContent, rawInput, rawOutput, ...retainedData } = toolCall.data;
+  const inferredArguments = geminiMcpArguments(rawInput, initialContent ?? content);
+  const argumentsValue =
+    rememberedArguments !== undefined ? rememberedArguments : inferredArguments;
+  const terminal = toolCall.status === "completed" || toolCall.status === "failed";
+  const outputText = terminal ? textFromAcpToolContent(content) : undefined;
+  const result =
+    rawOutput !== undefined
+      ? rawOutput
+      : outputText
+        ? { content: [{ type: "text", text: outputText }] }
+        : undefined;
+
+  return {
+    ...toolCall,
+    itemType: "mcp_tool_call",
+    data: {
+      ...retainedData,
+      item: {
+        type: "mcpToolCall",
+        id: toolCall.toolCallId,
+        server: identity.server,
+        tool: identity.tool,
+        ...(toolCall.status ? { status: toolCall.status } : {}),
+        ...(argumentsValue !== undefined ? { arguments: argumentsValue } : {}),
+        ...(result !== undefined ? { result } : {}),
+      },
+    },
+  };
 }
 
 const resolveNotificationTurnId = (ctx: GeminiSessionContext): TurnId | undefined =>
@@ -578,6 +681,7 @@ export function makeGeminiAdapter(
           }
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
+          const mcpToolArguments = new Map<string, unknown>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
           yield* Effect.addFinalizer(() =>
@@ -637,6 +741,15 @@ export function makeGeminiAdapter(
               mapAcpCallbackFailure(
                 Effect.gen(function* () {
                   yield* logNative(input.threadId, "session/request_permission", params);
+                  if (parseGeminiMcpToolTitle(params.toolCall.title)) {
+                    const argumentsValue = geminiMcpArguments(
+                      params.toolCall.rawInput,
+                      params.toolCall.content,
+                    );
+                    if (argumentsValue !== undefined) {
+                      mcpToolArguments.set(params.toolCall.toolCallId, argumentsValue);
+                    }
+                  }
                   if (input.runtimeMode === "full-access") {
                     const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
                     if (autoApprovedOptionId !== undefined) {
@@ -685,6 +798,9 @@ export function makeGeminiAdapter(
                       decision: resolved,
                     }),
                   );
+                  if (resolved === "decline" || resolved === "cancel") {
+                    mcpToolArguments.delete(params.toolCall.toolCallId);
+                  }
                   const selectedOptionId =
                     resolved === "cancel" ? undefined : selectPermissionOptionId(params, resolved);
                   return {
@@ -814,18 +930,26 @@ export function makeGeminiAdapter(
                       "session/update",
                     );
                     return;
-                  case "ToolCallUpdated":
+                  case "ToolCallUpdated": {
+                    const toolCall = normalizeGeminiMcpToolCall(
+                      event.toolCall,
+                      mcpToolArguments.get(event.toolCall.toolCallId),
+                    );
+                    if (toolCall.status === "completed" || toolCall.status === "failed") {
+                      mcpToolArguments.delete(toolCall.toolCallId);
+                    }
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
                         stamp,
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
-                        toolCall: event.toolCall,
+                        toolCall,
                         rawPayload: event.rawPayload,
                       }),
                     );
                     return;
+                  }
                   case "ContentDelta":
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
@@ -1065,6 +1189,11 @@ export function makeGeminiAdapter(
               prompt: prepared.promptParts,
             })
             .pipe(
+              Effect.retry({
+                while: isRetryableGeminiCapacityError,
+                times: GEMINI_PROMPT_RETRY_ATTEMPTS,
+                schedule: Schedule.exponential(GEMINI_PROMPT_RETRY_DELAY),
+              }),
               Effect.tap((promptResult) =>
                 Effect.all([
                   Ref.set(promptRpcSucceeded, true),
@@ -1074,12 +1203,10 @@ export function makeGeminiAdapter(
               Effect.tapError((error) =>
                 Ref.set(
                   promptFailureMessageRef,
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
+                  mapGeminiPromptError(input.threadId, error).message,
                 ).pipe(Effect.andThen(prepared.acp.drainEvents)),
               ),
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
-              ),
+              Effect.mapError((error) => mapGeminiPromptError(input.threadId, error)),
             );
 
           return yield* withThreadLock(

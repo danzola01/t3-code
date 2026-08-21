@@ -135,7 +135,9 @@ function summarizeToolTextOutput(value: string): string | null {
     }
   }
 
-  const firstLine = lines.find((line) => line !== "```");
+  const firstLine = lines.find(
+    (line) => !/^```(?:json)?$/iu.test(line) && !/^[[\]{},]+$/u.test(line),
+  );
   if (firstLine) {
     return firstLine.length <= 84 ? firstLine : `${firstLine.slice(0, 83).trimEnd()}…`;
   }

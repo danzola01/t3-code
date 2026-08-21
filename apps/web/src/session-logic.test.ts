@@ -1245,6 +1245,27 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("does not present a structural JSON line as the tool output summary", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "formatted-json-tool",
+        kind: "tool.completed",
+        summary: "Search",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Search",
+          data: {
+            rawOutput: {
+              content: '{\n  "issues": [\n    { "key": "T3-123" }\n  ]\n}',
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries[0]?.detail).toBe('"issues": [');
+  });
+
   it("uses completed read-file output previews and still collapses the same tool call", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -72,6 +72,9 @@ export interface AcpSessionRuntimeOptions {
     | string
     | ((initializeResult: EffectAcpSchema.InitializeResponse) => string);
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  /** Keeps the original display content when an ACP update replaces it. Gemini
+   * encodes MCP arguments there instead of using rawInput. */
+  readonly retainInitialToolCallContent?: boolean;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -401,6 +404,7 @@ export const make = (
           toolCallsRef,
           assistantSegmentRef,
           assistantItemRuntimeId,
+          retainInitialToolCallContent: options.retainInitialToolCallContent === true,
           params: notification,
         });
       }),
@@ -852,6 +856,7 @@ const handleSessionUpdate = ({
   toolCallsRef,
   assistantSegmentRef,
   assistantItemRuntimeId,
+  retainInitialToolCallContent,
   params,
 }: {
   readonly queue: Queue.Queue<AcpSessionRuntimeEvent>;
@@ -859,6 +864,7 @@ const handleSessionUpdate = ({
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly assistantItemRuntimeId: string;
+  readonly retainInitialToolCallContent: boolean;
   readonly params: EffectAcpSchema.SessionNotification;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -876,7 +882,9 @@ const handleSessionUpdate = ({
         });
         const { previous, merged } = yield* Ref.modify(toolCallsRef, (current) => {
           const previous = current.get(event.toolCall.toolCallId);
-          const nextToolCall = mergeToolCallState(previous, event.toolCall);
+          const nextToolCall = mergeToolCallState(previous, event.toolCall, {
+            retainInitialContent: retainInitialToolCallContent,
+          });
           const next = new Map(current);
           if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
             next.delete(nextToolCall.toolCallId);

@@ -149,6 +149,38 @@ describe("projectActivityPayload agent-field survival", () => {
     expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
   });
 
+  it("skips structural-only lines when summarizing formatted MCP JSON", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "mcp_tool_call",
+        data: {
+          item: {
+            type: "mcpToolCall",
+            id: "item-1",
+            tool: "Search",
+            server: "atlassian",
+            status: "completed",
+            arguments: { query: "project = T3" },
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: '{\n  "issues": [\n    { "key": "T3-123" }\n  ]\n}',
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const item = data.item as Record<string, unknown>;
+
+    expect(item.arguments).toEqual({ query: "project = T3" });
+    expect(item.result).toEqual({ content: '"issues": [' });
+    expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
+  });
+
   it("slims Claude-shaped mcp_tool_call data (toolName/input/result block)", () => {
     const projected = projectActivityPayload(
       activity({

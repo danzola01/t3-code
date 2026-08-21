@@ -50,6 +50,9 @@ Gemini's own MCP configuration continues to work normally. T3 Code also attaches
 server over ACP, so Gemini can use T3 Code tools without writing credentials or endpoints into the
 project.
 
+Gemini MCP activity rows show the server, tool arguments, and a compact result preview. Large MCP
+responses stay summarized when a thread is sent to another client.
+
 ## Skills And Custom Commands
 
 Gemini skills are discovered from the active Gemini home and from `.gemini/skills` in the project.
@@ -70,3 +73,9 @@ T3 Code approval policy instead of executing outside the agent boundary.
 T3 Code workflow scripts are provider-neutral. Choose a Gemini provider instance and model when
 starting a scripted workflow; every prompt uses the same Gemini ACP session and has the same MCP,
 skill, command, and permission behavior as a normal thread.
+
+## Temporary Capacity Failures
+
+Gemini can occasionally reject a prompt because the selected model has no available capacity. T3
+Code briefly retries these capacity failures before reporting them. If Gemini remains unavailable,
+wait a moment and try again or temporarily select another model.

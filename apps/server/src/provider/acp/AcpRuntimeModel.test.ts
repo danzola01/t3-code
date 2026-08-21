@@ -255,6 +255,42 @@ describe("AcpRuntimeModel", () => {
     }
   });
 
+  it("retains initial ACP tool content when a completion replaces it", () => {
+    const initialContent = [
+      {
+        type: "content",
+        content: { type: "text", text: '{"query":"project = T3"}' },
+      },
+    ];
+    const completedContent = [
+      {
+        type: "content",
+        content: { type: "text", text: '{\n  "issues": []\n}' },
+      },
+    ];
+
+    const merged = mergeToolCallState(
+      {
+        toolCallId: "tool-1",
+        kind: "other",
+        status: "inProgress",
+        title: "Search (atlassian MCP Server)",
+        data: { toolCallId: "tool-1", kind: "other", content: initialContent },
+      },
+      {
+        toolCallId: "tool-1",
+        kind: "other",
+        status: "completed",
+        title: "Search (atlassian MCP Server)",
+        data: { toolCallId: "tool-1", kind: "other", content: completedContent },
+      },
+      { retainInitialContent: true },
+    );
+
+    expect(merged.data.initialContent).toEqual(initialContent);
+    expect(merged.data.content).toEqual(completedContent);
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",

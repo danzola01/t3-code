@@ -58,6 +58,7 @@ export interface AcpSessionModeState {
 
 export interface AcpToolCallState {
   readonly toolCallId: string;
+  readonly itemType?: ToolLifecycleItemType;
   readonly kind?: string;
   readonly title?: string;
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
@@ -404,15 +405,26 @@ function parseTypedToolCallState(
 export function mergeToolCallState(
   previous: AcpToolCallState | undefined,
   next: AcpToolCallState,
+  options?: { readonly retainInitialContent?: boolean },
 ): AcpToolCallState {
+  const itemType = next.itemType ?? previous?.itemType;
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
   const title = next.title ?? previous?.title;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
   const detail = next.detail ?? previous?.detail;
+  const displacedContent =
+    options?.retainInitialContent === true &&
+    next.data.content !== undefined &&
+    previous?.data.content !== undefined
+      ? previous.data.content
+      : undefined;
+  const initialContent =
+    next.data.initialContent ?? previous?.data.initialContent ?? displacedContent;
   return {
     toolCallId: next.toolCallId,
+    ...(itemType ? { itemType } : {}),
     ...(kind ? { kind } : {}),
     ...(title ? { title } : {}),
     ...(status ? { status } : {}),
@@ -421,6 +433,7 @@ export function mergeToolCallState(
     data: {
       ...previous?.data,
       ...next.data,
+      ...(initialContent !== undefined ? { initialContent } : {}),
     },
   };
 }

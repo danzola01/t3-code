@@ -22,6 +22,7 @@ const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION ===
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const emitGeminiUsage = process.env.T3_ACP_EMIT_GEMINI_USAGE === "1";
+const emitGeminiMcpToolCalls = process.env.T3_ACP_EMIT_GEMINI_MCP_TOOL_CALLS === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
@@ -37,6 +38,8 @@ const emitStaleXAiPromptCompleteBeforeSecondHang =
 const emitOverlappingXAiPromptCompleteOutOfOrder =
   process.env.T3_ACP_EMIT_OVERLAPPING_XAI_PROMPT_COMPLETE_OUT_OF_ORDER === "1";
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failPromptAttempts = Number(process.env.T3_ACP_FAIL_PROMPT_ATTEMPTS ?? "0");
+const promptFailureMessage = process.env.T3_ACP_PROMPT_FAILURE_MESSAGE ?? "Mock prompt failure";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
@@ -462,8 +465,8 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
 
-      if (failPrompt) {
-        return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
+      if (failPrompt || promptCount <= failPromptAttempts) {
+        return yield* AcpError.AcpRequestError.internalError(promptFailureMessage);
       }
 
       if (emitStaleXAiPromptCompleteBeforeSecondHang && promptCount === 1) {
@@ -625,6 +628,52 @@ const program = Effect.gen(function* () {
           update: {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "after tool" },
+          },
+        });
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitGeminiMcpToolCalls) {
+        const toolCallId = "gemini-mcp-tool-call-1";
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "Search (atlassian MCP Server)",
+            kind: "other",
+            status: "in_progress",
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: '{"query":"project = T3"}',
+                },
+              },
+            ],
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: "Search (atlassian MCP Server)",
+            kind: "other",
+            status: "completed",
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: '{\n  "issues": [\n    { "key": "T3-123" }\n  ]\n}',
+                },
+              },
+            ],
           },
         });
 

@@ -87,6 +87,7 @@ export const makeGeminiAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
+        retainInitialToolCallContent: true,
         spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),
         authMethodId: (initializeResult) =>
           resolveGeminiAuthMethodId(

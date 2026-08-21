@@ -1354,7 +1354,9 @@ function summarizeToolTextOutput(value: string): string | null {
       lines.push(line);
     }
   }
-  const firstLine = lines.find((line) => line !== "```");
+  const firstLine = lines.find(
+    (line) => !/^```(?:json)?$/iu.test(line) && !/^[[\]{},]+$/u.test(line),
+  );
   if (firstLine) {
     return truncateInlinePreview(firstLine);
   }
