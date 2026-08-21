@@ -1901,7 +1901,7 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.metadata.updated" && event.payload.name) {
-        if (canReplaceThreadTitle(thread.title)) {
+        if (event.payload.replaceExistingTitle === true || canReplaceThreadTitle(thread.title)) {
           yield* orchestrationEngine.dispatch({
             type: "thread.meta.update",
             commandId: yield* providerCommandId(event, "thread-meta-update"),

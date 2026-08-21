@@ -181,6 +181,13 @@ interface GeminiMcpToolIdentity {
   readonly tool: string;
 }
 
+const GEMINI_UPDATE_TOPIC_TITLE_PATTERN = /^Update topic to: "(?<title>.+)"$/u;
+
+function geminiThreadTitleFromTopicToolCall(toolCall: AcpToolCallState): string | undefined {
+  const match = GEMINI_UPDATE_TOPIC_TITLE_PATTERN.exec(toolCall.title ?? "");
+  return match?.groups?.title?.trim() || undefined;
+}
+
 function parseGeminiMcpToolTitle(
   title: string | null | undefined,
 ): GeminiMcpToolIdentity | undefined {
@@ -682,6 +689,7 @@ export function makeGeminiAdapter(
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const mcpToolArguments = new Map<string, unknown>();
+          const renamedTopicToolCallIds = new Set<string>();
           const sessionScope = yield* Scope.make("sequential");
           let sessionScopeTransferred = false;
           yield* Effect.addFinalizer(() =>
@@ -948,6 +956,33 @@ export function makeGeminiAdapter(
                         rawPayload: event.rawPayload,
                       }),
                     );
+                    const topicTitle = geminiThreadTitleFromTopicToolCall(toolCall);
+                    if (
+                      topicTitle !== undefined &&
+                      toolCall.status !== "failed" &&
+                      !renamedTopicToolCallIds.has(toolCall.toolCallId)
+                    ) {
+                      renamedTopicToolCallIds.add(toolCall.toolCallId);
+                      yield* offerRuntimeEvent({
+                        type: "thread.metadata.updated",
+                        ...(yield* makeEventStamp()),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        payload: {
+                          name: topicTitle,
+                          replaceExistingTitle: true,
+                          metadata: {
+                            source: "gemini.update_topic",
+                            toolCallId: toolCall.toolCallId,
+                          },
+                        },
+                        raw: {
+                          source: "acp.jsonrpc",
+                          method: "session/update",
+                          payload: event.rawPayload,
+                        },
+                      });
+                    }
                     return;
                   }
                   case "ContentDelta":

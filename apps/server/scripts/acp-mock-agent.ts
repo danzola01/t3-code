@@ -23,6 +23,7 @@ const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLET
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const emitGeminiUsage = process.env.T3_ACP_EMIT_GEMINI_USAGE === "1";
 const emitGeminiMcpToolCalls = process.env.T3_ACP_EMIT_GEMINI_MCP_TOOL_CALLS === "1";
+const emitGeminiTopicUpdate = process.env.T3_ACP_EMIT_GEMINI_TOPIC_UPDATE === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
@@ -671,6 +672,44 @@ const program = Effect.gen(function* () {
                 content: {
                   type: "text",
                   text: '{\n  "issues": [\n    { "key": "T3-123" }\n  ]\n}',
+                },
+              },
+            ],
+          },
+        });
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitGeminiTopicUpdate) {
+        const toolCallId = "gemini-update-topic-1";
+        const title = 'Update topic to: "Improving Gemini titles"';
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title,
+            kind: "think",
+            status: "in_progress",
+          },
+        });
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title,
+            kind: "think",
+            status: "completed",
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: "## Topic: **Improving Gemini titles**",
                 },
               },
             ],

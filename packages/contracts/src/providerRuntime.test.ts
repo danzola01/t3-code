@@ -49,6 +49,26 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.plan[1]?.status).toBe("inProgress");
   });
 
+  it("decodes authoritative thread title metadata", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "thread.metadata.updated",
+      eventId: "event-thread-title-1",
+      provider: "gemini",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      payload: {
+        name: "Current Gemini topic",
+        replaceExistingTitle: true,
+      },
+    });
+
+    expect(parsed.type).toBe("thread.metadata.updated");
+    if (parsed.type !== "thread.metadata.updated") {
+      throw new Error("expected thread.metadata.updated");
+    }
+    expect(parsed.payload.replaceExistingTitle).toBe(true);
+  });
+
   it("decodes proposed-plan completion events", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.proposed.completed",

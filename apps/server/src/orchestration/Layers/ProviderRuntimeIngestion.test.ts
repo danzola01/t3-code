@@ -3020,6 +3020,30 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.title).toBe("User-set title");
   });
 
+  it("applies an authoritative provider title over an existing title", async () => {
+    const harness = await createHarness({ threadTitle: "Existing title" });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-thread-metadata-authoritative"),
+      provider: ProviderDriverKind.make("gemini"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        name: "Current Gemini topic",
+        replaceExistingTitle: true,
+        metadata: { source: "gemini.update_topic" },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.title === "Current Gemini topic",
+    );
+    expect(thread.title).toBe("Current Gemini topic");
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

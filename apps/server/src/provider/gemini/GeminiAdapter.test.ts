@@ -207,6 +207,61 @@ it.layer(testLayer)("GeminiAdapter", (it) => {
     }),
   );
 
+  it.effect("maps Gemini topic updates to authoritative thread titles once per tool call", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "gemini-topic-update-")),
+      );
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGeminiWrapper({ T3_ACP_EMIT_GEMINI_TOPIC_UPDATE: "1" }),
+      );
+      const adapter = yield* makeGeminiAdapter(
+        decodeGeminiSettings({ binaryPath: wrapperPath, authMethod: "oauth-personal" }),
+      );
+      const threadId = ThreadId.make("gemini-topic-update-thread");
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const turnCompleted = yield* Deferred.make<void>();
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)).pipe(
+          Effect.andThen(
+            event.type === "turn.completed"
+              ? Deferred.succeed(turnCompleted, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("gemini"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Improve thread titles", attachments: [] });
+      yield* Deferred.await(turnCompleted);
+      yield* Fiber.interrupt(eventFiber);
+
+      const titleUpdates = runtimeEvents.filter(
+        (event) => event.type === "thread.metadata.updated",
+      );
+      assert.lengthOf(titleUpdates, 1);
+      const titleUpdate = titleUpdates[0];
+      assert.equal(titleUpdate?.type, "thread.metadata.updated");
+      if (titleUpdate?.type === "thread.metadata.updated") {
+        assert.deepEqual(titleUpdate.payload, {
+          name: "Improving Gemini titles",
+          replaceExistingTitle: true,
+          metadata: {
+            source: "gemini.update_topic",
+            toolCallId: "gemini-update-topic-1",
+          },
+        });
+      }
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("retries transient Gemini capacity failures", () =>
     Effect.gen(function* () {
       const workspace = yield* Effect.promise(() =>

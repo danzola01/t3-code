@@ -302,6 +302,7 @@ export type ThreadStateChangedPayload = typeof ThreadStateChangedPayload.Type;
 
 const ThreadMetadataUpdatedPayload = Schema.Struct({
   name: Schema.optional(TrimmedNonEmptyStringSchema),
+  replaceExistingTitle: Schema.optional(Schema.Boolean),
   metadata: Schema.optional(UnknownRecordSchema),
 });
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;

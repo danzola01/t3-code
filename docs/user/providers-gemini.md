@@ -53,6 +53,9 @@ project.
 Gemini MCP activity rows show the server, tool arguments, and a compact result preview. Large MCP
 responses stay summarized when a thread is sent to another client.
 
+When Gemini publishes a new topic with its built-in `update_topic` tool, T3 Code renames the thread
+to that topic so the sidebar stays aligned with Gemini's current work.
+
 ## Skills And Custom Commands
 
 Gemini skills are discovered from the active Gemini home and from `.gemini/skills` in the project.
