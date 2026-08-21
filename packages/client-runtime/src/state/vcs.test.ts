@@ -344,6 +344,71 @@ describe("cached VCS refs", () => {
     ),
   );
 
+  it.effect("refreshes refs and local status before restarting cached ref views", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const refRequests = yield* Ref.make<ReadonlyArray<VcsListRefsInput>>([]);
+        const localStatusRequests = yield* Ref.make<ReadonlyArray<{ readonly cwd: string }>>([]);
+        const client = {
+          [WS_METHODS.vcsListRefs]: (input: VcsListRefsInput) =>
+            Ref.update(refRequests, (current) => [...current, input]).pipe(Effect.as(LIVE_REFS)),
+          [WS_METHODS.vcsRefreshLocalStatus]: (input: { readonly cwd: string }) =>
+            Ref.update(localStatusRequests, (current) => [...current, input]).pipe(
+              Effect.as({
+                isRepo: true,
+                hasPrimaryRemote: true,
+                isDefaultRef: false,
+                refName: "release",
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+              }),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+        const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (
+          _environmentId,
+          effect,
+        ) => Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+        const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+          run,
+        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+        const runtime = Atom.runtime(
+          Layer.merge(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+            Layer.succeed(
+              Persistence.EnvironmentCacheStore,
+              cacheWithRefs(Option.some(CACHED_REFS)),
+            ),
+          ),
+        );
+        const atoms = createVcsEnvironmentAtoms(runtime);
+        const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+          Effect.sync(() => registry.dispose()),
+        );
+
+        const result = yield* Effect.promise(() =>
+          atoms.refreshRefs.run(registry, {
+            environmentId: TARGET.environmentId,
+            input: { cwd: "/repo" },
+          }),
+        );
+
+        expect(AsyncResult.isSuccess(result)).toBe(true);
+        expect(yield* Ref.get(refRequests)).toEqual([{ cwd: "/repo", limit: 100, refresh: true }]);
+        expect(yield* Ref.get(localStatusRequests)).toEqual([{ cwd: "/repo" }]);
+        expect(registry.get(vcsRefsCacheStateAtom(TARGET)).revision).toBe(1);
+      }),
+    ),
+  );
+
   it.effect("suppresses persisted snapshots after an environment-wide clear fails", () =>
     Effect.scoped(
       Effect.gen(function* () {

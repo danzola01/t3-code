@@ -5,13 +5,14 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Haptics from "expo-haptics";
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Alert,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   TextInput,
   View,
@@ -227,6 +228,12 @@ export function NewTaskBranchPickerRouteScreen() {
     };
   }, [flow.setBranchQuery]);
 
+  useFocusEffect(
+    useCallback(() => {
+      void flow.loadBranches();
+    }, [flow.loadBranches]),
+  );
+
   useEffect(
     () =>
       navigation.addListener("beforeRemove", (event) => {
@@ -342,10 +349,13 @@ export function NewTaskBranchPickerRouteScreen() {
   const branchContent =
     flow.filteredBranches.length === 0 ? (
       <ScrollView
+        alwaysBounceVertical
         className="flex-1 bg-sheet"
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 16, paddingTop: 12 }}
-        scrollEnabled={false}
+        refreshControl={
+          <RefreshControl refreshing={flow.branchesLoading} onRefresh={flow.loadBranches} />
+        }
         showsVerticalScrollIndicator={false}
       >
         {branchListHeader}
@@ -402,6 +412,8 @@ export function NewTaskBranchPickerRouteScreen() {
         }
         onEndReached={flow.hasMoreBranches ? flow.loadMoreBranches : undefined}
         onEndReachedThreshold={0.35}
+        onRefresh={flow.loadBranches}
+        refreshing={flow.branchesLoading}
         renderItem={renderBranch}
         showsVerticalScrollIndicator={false}
       />

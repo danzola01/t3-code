@@ -27,6 +27,14 @@ T3 Code works with the platforms your team already uses:
 - Use the **Publish Repository** action to create a new hosted repository (GitHub, GitLab, Bitbucket, or Azure DevOps), add it as your origin remote, and push, in one flow
 - If the local repository has no commits yet, publishing creates the remote and wires it up but does not push. Make a commit, then push normally.
 
+### Keep Branches in Sync
+
+- Opening the branch picker refreshes branches and the current checkout from Git on the server
+- If a terminal creates, deletes, fetches, or checks out a branch, reopen the picker to see it
+- On mobile, opening the branch screen refreshes automatically; pull down to refresh again
+- Existing threads keep the branch they belong to. If a terminal checks out another branch in a
+  shared local workspace, T3 Code shows the mismatch instead of silently moving the thread
+
 ### Manage Code Reviews Without Context Switching
 
 **Create pull requests while you work**

@@ -145,6 +145,7 @@ export default function DiffPanel({
     serverConfig?.availableEditors ?? [],
   );
   const getDiffFileContents = useAtomCommand(reviewEnvironment.diffFileContents);
+  const refreshRefs = useAtomCommand(vcsEnvironment.refreshRefs, { reportFailure: false });
   const gitStatusQuery = useEnvironmentQuery(
     activeThread !== null && activeThread !== undefined && activeCwd != null
       ? vcsEnvironment.status({
@@ -601,7 +602,14 @@ export default function DiffPanel({
               filteredItems={filteredBaseRefItems}
               value={selectedBaseRef ?? AUTOMATIC_BASE_REF}
               onOpenChange={(open) => {
-                if (!open) setBaseRefQuery("");
+                if (open && activeThread && branchDiffPreview.data?.cwd) {
+                  void refreshRefs({
+                    environmentId: activeThread.environmentId,
+                    input: { cwd: branchDiffPreview.data.cwd },
+                  });
+                } else if (!open) {
+                  setBaseRefQuery("");
+                }
               }}
               onValueChange={(value) => {
                 if (!value) return;

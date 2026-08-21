@@ -1,7 +1,7 @@
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useState } from "react";
-import { Platform, Pressable, ScrollView, View } from "react-native";
+import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useCallback, useState } from "react";
+import { Platform, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AndroidSheetHeader } from "../../../components/AndroidScreenHeader";
@@ -48,6 +48,22 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
     currentBranchLabel === "Detached HEAD" ? "main" : currentBranchLabel,
   );
   const [worktreeBranchName, setWorktreeBranchName] = useState("");
+  const [isRefreshingBranches, setIsRefreshingBranches] = useState(false);
+
+  const refreshBranches = useCallback(async () => {
+    setIsRefreshingBranches(true);
+    try {
+      await gitActions.refreshSelectedThreadBranches();
+    } finally {
+      setIsRefreshingBranches(false);
+    }
+  }, [gitActions.refreshSelectedThreadBranches]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshBranches();
+    }, [refreshBranches]),
+  );
 
   const disabledExistingBranchNames: Array<string> = [];
   for (const branch of availableBranches) {
@@ -67,6 +83,9 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
         showsVerticalScrollIndicator={false}
         contentInset={{ bottom: Math.max(insets.bottom, 18) + 18 }}
         contentContainerClassName="gap-4 px-5 pt-2"
+        refreshControl={
+          <RefreshControl refreshing={isRefreshingBranches} onRefresh={refreshBranches} />
+        }
       >
         <View className="gap-2 rounded-[18px] border border-border bg-card px-4 py-4">
           <Text className="text-foreground-secondary text-2xs font-t3-bold tracking-[1px] uppercase">

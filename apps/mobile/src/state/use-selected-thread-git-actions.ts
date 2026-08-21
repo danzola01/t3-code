@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { EnvironmentProject, EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
@@ -31,6 +31,7 @@ export function useSelectedThreadGitActions() {
     reportFailure: false,
   });
   const refreshStatus = useAtomCommand(vcsEnvironment.refreshStatus, { reportFailure: false });
+  const refreshRefs = useAtomCommand(vcsEnvironment.refreshRefs, { reportFailure: false });
   const switchRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const createRef = useAtomCommand(vcsEnvironment.createRef, { reportFailure: false });
   const createWorktree = useAtomCommand(vcsEnvironment.createWorktree, { reportFailure: false });
@@ -55,6 +56,8 @@ export function useSelectedThreadGitActions() {
     [selectedThread?.environmentId, selectedThreadGitRootCwd],
   );
   const branchState = useBranches(branchTarget);
+  const cachedBranchRefsRef = useRef(branchState.data?.refs ?? []);
+  cachedBranchRefsRef.current = branchState.data?.refs ?? cachedBranchRefsRef.current;
   const updateThreadGitContext = useCallback(
     async (
       thread: NonNullable<typeof selectedThread>,
@@ -165,11 +168,16 @@ export function useSelectedThreadGitActions() {
   );
 
   const refreshSelectedThreadBranches = useCallback(async (): Promise<ReadonlyArray<VcsRef>> => {
-    branchState.refresh();
-    return dedupeRemoteBranchesWithLocalMatches(branchState.data?.refs ?? []).filter(
-      (branch) => !branch.isRemote,
-    );
-  }, [branchState]);
+    if (!selectedThread || !selectedThreadGitRootCwd) {
+      return [];
+    }
+    const result = await refreshRefs({
+      environmentId: selectedThread.environmentId,
+      input: { cwd: selectedThreadGitRootCwd },
+    });
+    const refs = AsyncResult.isSuccess(result) ? result.value[0].refs : cachedBranchRefsRef.current;
+    return dedupeRemoteBranchesWithLocalMatches(refs).filter((branch) => !branch.isRemote);
+  }, [refreshRefs, selectedThread, selectedThreadGitRootCwd]);
 
   const syncSelectedThreadBranchState = useCallback(
     async (input: {

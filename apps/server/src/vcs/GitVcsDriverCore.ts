@@ -57,11 +57,13 @@ const STATUS_UPSTREAM_REFRESH_FAILURE_MAX_COOLDOWN = Duration.minutes(15);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
 const REPOSITORY_PATHS_CACHE_CAPACITY = 2_048;
 const REPOSITORY_PATHS_CACHE_TTL = Duration.minutes(10);
-const REPOSITORY_PATHS_REFRESH_COALESCE_TTL = Duration.seconds(5);
+// A zero success TTL still shares an in-flight Effect Cache lookup, but a
+// later explicit refresh always observes Git again after that lookup settles.
+const REPOSITORY_PATHS_REFRESH_SUCCESS_TTL = Duration.zero;
 const NON_REPOSITORY_PATHS_CACHE_TTL = Duration.seconds(1);
 const LIST_REFS_SNAPSHOT_CACHE_CAPACITY = 64;
 const LIST_REFS_SNAPSHOT_CACHE_TTL = Duration.minutes(2);
-const LIST_REFS_REFRESH_COALESCE_TTL = Duration.seconds(5);
+const LIST_REFS_REFRESH_SUCCESS_TTL = Duration.zero;
 const LIST_REFS_REFRESH_FAILURE_COOLDOWN = Duration.seconds(30);
 const STATUS_DEFAULT_BRANCH_CACHE_TTL = Duration.minutes(5);
 const STATUS_ORIGIN_EXISTS_CACHE_TTL = Duration.minutes(5);
@@ -1114,10 +1116,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     {
       capacity: REPOSITORY_PATHS_CACHE_CAPACITY,
       timeToLive: Exit.match({
-        onSuccess: (repositoryPaths) =>
-          repositoryPaths === null
-            ? NON_REPOSITORY_PATHS_CACHE_TTL
-            : REPOSITORY_PATHS_REFRESH_COALESCE_TTL,
+        onSuccess: () => REPOSITORY_PATHS_REFRESH_SUCCESS_TTL,
         onFailure: () => Duration.zero,
       }),
     },
@@ -2642,7 +2641,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     {
       capacity: LIST_REFS_SNAPSHOT_CACHE_CAPACITY,
       timeToLive: (exit) =>
-        Exit.isSuccess(exit) ? LIST_REFS_REFRESH_COALESCE_TTL : LIST_REFS_REFRESH_FAILURE_COOLDOWN,
+        Exit.isSuccess(exit) ? LIST_REFS_REFRESH_SUCCESS_TTL : LIST_REFS_REFRESH_FAILURE_COOLDOWN,
     },
   );
   const resolveListRefsSnapshot = Effect.fn("resolveListRefsSnapshot")(function* (

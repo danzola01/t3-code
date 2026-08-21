@@ -39,6 +39,7 @@ import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
+import { useAtomCommand } from "../../state/use-atom-command";
 import {
   appendComposerDraftAttachments,
   clearComposerDraft,
@@ -540,9 +541,13 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [debouncedBranchQuery, selectedProject?.environmentId, selectedProject?.workspaceRoot],
   );
   const branchState = usePaginatedBranches(branchTarget);
+  const refreshRefs = useAtomCommand(vcsEnvironment.refreshRefs, { reportFailure: false });
+  const [isRefreshingBranches, setIsRefreshingBranches] = useState(false);
   const branchSearchIsDebouncing = branchQuery.trim() !== debouncedBranchQuery.trim();
   const branchesLoading =
-    branchSearchIsDebouncing || (branchState.isPending && branchState.data === null);
+    isRefreshingBranches ||
+    branchSearchIsDebouncing ||
+    (branchState.isPending && branchState.data === null);
   const branchesFetchingNextPage = branchState.isFetchingNextPage;
   const hasMoreBranches =
     branchState.data?.nextCursor !== null && branchState.data?.nextCursor !== undefined;
@@ -740,15 +745,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [selectedBranchName, selectedProjectDraftKey, selectedWorktreePath, workspaceMode],
   );
 
-  const refreshBranches = branchState.refresh;
   const loadMoreBranches = branchState.loadNext;
-  const loadBranches = useCallback(() => {
+  const loadBranches = useCallback(async () => {
     if (!selectedProject) {
       return;
     }
     setPendingConnectionError(null);
-    refreshBranches();
-  }, [refreshBranches, selectedProject]);
+    setIsRefreshingBranches(true);
+    try {
+      await refreshRefs({
+        environmentId: selectedProject.environmentId,
+        input: { cwd: selectedProject.workspaceRoot },
+      });
+    } finally {
+      setIsRefreshingBranches(false);
+    }
+  }, [refreshRefs, selectedProject]);
 
   useEffect(() => {
     if (

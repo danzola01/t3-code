@@ -111,6 +111,9 @@ export function BranchToolbarBranchSelector({
   const createRefMutation = useAtomCommand(vcsEnvironment.createRef, {
     reportFailure: false,
   });
+  const refreshRefs = useAtomCommand(vcsEnvironment.refreshRefs, {
+    reportFailure: false,
+  });
   // ---------------------------------------------------------------------------
   // Thread / project state (pushed down from parent to colocate with mutation)
   // ---------------------------------------------------------------------------
@@ -235,6 +238,19 @@ export function BranchToolbarBranchSelector({
     [branchCwd, branchRefQuery, environmentId],
   );
   const branchRefState = usePaginatedBranches(branchRefTarget);
+  const [isRefreshingRefs, setIsRefreshingRefs] = useState(false);
+  const refreshRefsFromGit = useCallback(async () => {
+    if (branchCwd === null) return;
+    setIsRefreshingRefs(true);
+    try {
+      await refreshRefs({
+        environmentId,
+        input: { cwd: branchCwd },
+      });
+    } finally {
+      setIsRefreshingRefs(false);
+    }
+  }, [branchCwd, environmentId, refreshRefs]);
   const refs = branchRefState.refs;
   const hasNextPage =
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
@@ -519,13 +535,32 @@ export function BranchToolbarBranchSelector({
   // ---------------------------------------------------------------------------
   const branchListScrollElementRef = useRef<HTMLElement | null>(null);
   const previousBranchListScrollTopRef = useRef<number | null>(null);
-  const handleOpenChange = useCallback((open: boolean) => {
-    previousBranchListScrollTopRef.current = null;
-    setIsBranchMenuOpen(open);
-    if (!open) {
-      setBranchQuery("");
-    }
-  }, []);
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      previousBranchListScrollTopRef.current = null;
+      setIsBranchMenuOpen(open);
+      if (open) {
+        void refreshRefsFromGit();
+      } else {
+        setBranchQuery("");
+      }
+    },
+    [refreshRefsFromGit],
+  );
+
+  useEffect(() => {
+    if (!isBranchMenuOpen) return;
+    const refreshOnFocus = () => void refreshRefsFromGit();
+    const refreshOnVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshOnFocus();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisibilityChange);
+    };
+  }, [isBranchMenuOpen, refreshRefsFromGit]);
 
   const [showTopBranchScrollFade, setShowTopBranchScrollFade] = useState(false);
   const [showBottomBranchScrollFade, setShowBottomBranchScrollFade] = useState(false);
@@ -786,7 +821,7 @@ export function BranchToolbarBranchSelector({
               className="pointer-events-none absolute top-1.5 left-0 size-4 shrink-0 text-muted-foreground/55"
             />
             <ComboboxInput
-              className="[&_input]:h-6.5 [&_input]:ps-5 [&_input]:font-sans [&_input]:leading-6.5"
+              className="[&_input]:h-6.5 [&_input]:ps-5 [&_input]:pe-6 [&_input]:font-sans [&_input]:leading-6.5"
               inputClassName="rounded-none bg-transparent text-sm"
               placeholder="Search refs..."
               showTrigger={false}
@@ -795,6 +830,23 @@ export function BranchToolbarBranchSelector({
               value={branchQuery}
               onChange={(event) => setBranchQuery(event.target.value)}
             />
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Refresh refs"
+                    disabled={isRefreshingRefs}
+                    className="absolute top-1 right-0 inline-flex size-5 items-center justify-center rounded text-muted-foreground/55 hover:bg-muted/60 hover:text-foreground disabled:opacity-35"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void refreshRefsFromGit()}
+                  />
+                }
+              >
+                <RefreshCwIcon aria-hidden="true" className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">Refresh refs</TooltipPopup>
+            </Tooltip>
           </div>
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">

@@ -15,7 +15,11 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
-import { createEnvironmentRpcCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
+import {
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+  createEnvironmentSubscriptionAtomFamily,
+} from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
@@ -25,6 +29,7 @@ import { followStreamInEnvironment } from "./runtime.ts";
 import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
 import {
   invalidateCachedVcsRefs,
+  invalidateVcsRefs,
   vcsRefsCacheStateAtom,
   withVcsRefsPersistenceLock,
 } from "./vcsRefInvalidation.ts";
@@ -284,6 +289,35 @@ export function createVcsEnvironmentAtoms<R, E>(
               return [next, [next]] as const;
             },
           ),
+        ),
+    }),
+    refreshRefs: createEnvironmentCommand(runtime, {
+      label: "environment-data:vcs:refresh-refs",
+      scheduler: vcsCommandScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.cwd]),
+      },
+      execute: (
+        input: { readonly cwd: string },
+        registry: AtomRegistry.AtomRegistry,
+        environmentId: EnvironmentId,
+      ) =>
+        Effect.all(
+          [
+            request(WS_METHODS.vcsListRefs, {
+              cwd: input.cwd,
+              limit: OFFLINE_BRANCH_LIST_LIMIT,
+              refresh: true,
+            }),
+            request(WS_METHODS.vcsRefreshLocalStatus, input),
+          ],
+          { concurrency: "unbounded" },
+        ).pipe(
+          // The forced read refreshes the server snapshot first. Restart every
+          // client-side ref view afterward so filtered and paginated queries
+          // all converge on that same snapshot without polling independently.
+          Effect.ensuring(Effect.sync(() => invalidateVcsRefs(registry, { environmentId }))),
         ),
     }),
     pull: createEnvironmentRpcCommand(runtime, {

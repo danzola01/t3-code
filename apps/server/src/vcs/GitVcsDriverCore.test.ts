@@ -212,13 +212,13 @@ it.effect("re-reads origin remote status after cache TTL expiry and bypassed inv
   }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("coalesces concurrent ref pages into one repository snapshot", () =>
+it.effect("coalesces concurrent ref pages throughout one repository snapshot read", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
       const spawnedArgs = yield* Ref.make<ReadonlyArray<ReadonlyArray<string>>>([]);
       const firstWorktreeScanStarted = yield* Deferred.make<void>();
-      const remoteNamesScanCompleted = yield* Deferred.make<void>();
+      const releaseFirstWorktreeScan = yield* Deferred.make<void>();
       const delayFirstWorktreeScan = yield* Ref.make(true);
       const countingSpawner = ChildProcessSpawner.make((command) =>
         Effect.gen(function* () {
@@ -232,21 +232,9 @@ it.effect("coalesces concurrent ref pages into one repository snapshot", () =>
             isWorktreeScan && (yield* Ref.getAndSet(delayFirstWorktreeScan, false));
           if (shouldDelay) {
             yield* Deferred.succeed(firstWorktreeScanStarted, undefined);
-            yield* Effect.sleep("8 seconds");
+            yield* Deferred.await(releaseFirstWorktreeScan);
           }
-          const handle = yield* delegate.spawn(command);
-          const isRemoteNamesScan =
-            command.args.length === 3 &&
-            command.args[0] === "--git-dir" &&
-            command.args[2] === "remote";
-          return isRemoteNamesScan
-            ? ChildProcessSpawner.makeHandle({
-                ...handle,
-                exitCode: handle.exitCode.pipe(
-                  Effect.tap(() => Deferred.succeed(remoteNamesScanCompleted, undefined)),
-                ),
-              })
-            : handle;
+          return yield* delegate.spawn(command);
         }),
       );
       const driver = yield* makeGitVcsDriverCore().pipe(
@@ -269,26 +257,23 @@ it.effect("coalesces concurrent ref pages into one repository snapshot", () =>
       yield* runGit(["commit", "-m", "initial commit"]);
       yield* Ref.set(spawnedArgs, []);
 
-      const initialRequest = yield* driver
-        .listRefs({ cwd, refresh: true, limit: 100 })
-        .pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Deferred.await(firstWorktreeScanStarted);
-      yield* Deferred.await(remoteNamesScanCompleted);
-      yield* TestClock.adjust("6 seconds");
-      const laterRequests = yield* Effect.all(
-        Array.from({ length: 30 }, (_, index) =>
-          driver.listRefs({
-            cwd,
-            refresh: true,
-            query: `missing-${index}`,
-            limit: 100,
-          }),
-        ),
+      const requests = yield* Effect.all(
+        [
+          driver.listRefs({ cwd, refresh: true, limit: 100 }),
+          ...Array.from({ length: 30 }, (_, index) =>
+            driver.listRefs({
+              cwd,
+              refresh: true,
+              query: `missing-${index}`,
+              limit: 100,
+            }),
+          ),
+        ],
         { concurrency: "unbounded" },
       ).pipe(Effect.forkChild({ startImmediately: true }));
-      yield* TestClock.adjust("2 seconds");
-      yield* Fiber.join(initialRequest);
-      yield* Fiber.join(laterRequests);
+      yield* Deferred.await(firstWorktreeScanStarted);
+      yield* Deferred.succeed(releaseFirstWorktreeScan, undefined);
+      yield* Fiber.join(requests);
       yield* driver.listRefs({ cwd, cursor: 1, limit: 100 });
 
       const firstSnapshotCommands = yield* Ref.get(spawnedArgs);
@@ -541,8 +526,6 @@ it.effect("refreshes the current branch after an external checkout", () =>
         args: ["checkout", "external-checkout"],
         timeoutMs: 10_000,
       });
-      yield* TestClock.adjust("6 seconds");
-
       const refreshedRefs = yield* driver.listRefs({ cwd, refresh: true });
       assert.isTrue(refreshedRefs.refs.find((ref) => ref.name === "external-checkout")?.current);
       assert.isFalse(refreshedRefs.refs.find((ref) => ref.name === initialBranch)?.current);
