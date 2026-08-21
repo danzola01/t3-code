@@ -434,4 +434,35 @@ describe("AcpRuntimeModel", () => {
       },
     });
   });
+
+  it("preserves Gemini commands supplied as plain execute titles", () => {
+    const command = "touch test_temp_file.txt && rm test_temp_file.txt";
+    const request = parsePermissionRequest({
+      sessionId: "session-1",
+      options: [
+        {
+          optionId: "allow-once",
+          name: "Allow once",
+          kind: "allow_once",
+        },
+      ],
+      toolCall: {
+        toolCallId: "tool-1",
+        title: command,
+        kind: "execute",
+        status: "pending",
+      },
+    });
+
+    expect(request).toMatchObject({
+      kind: "execute",
+      detail: command,
+      toolCall: {
+        title: "Ran command",
+        command,
+        detail: command,
+        data: { command },
+      },
+    });
+  });
 });

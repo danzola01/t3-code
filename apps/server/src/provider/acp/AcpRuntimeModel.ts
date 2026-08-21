@@ -248,7 +248,22 @@ function extractCommandFromTitle(title: string | undefined): string | undefined 
   return match?.[1]?.trim() || undefined;
 }
 
-function extractToolCallCommand(rawInput: unknown, title: string | undefined): string | undefined {
+const GENERIC_EXECUTE_TITLES = new Set([
+  "command",
+  "execute command",
+  "ran command",
+  "run command",
+  "shell",
+  "shell command",
+  "terminal",
+  "tool call",
+]);
+
+function extractToolCallCommand(
+  rawInput: unknown,
+  title: string | undefined,
+  kind: string | undefined,
+): string | undefined {
   if (isRecord(rawInput)) {
     const directCommand = normalizeCommandValue(rawInput.command);
     if (directCommand) {
@@ -263,7 +278,14 @@ function extractToolCallCommand(rawInput: unknown, title: string | undefined): s
       return executable;
     }
   }
-  return extractCommandFromTitle(title);
+  const commandFromTitle = extractCommandFromTitle(title);
+  if (commandFromTitle) {
+    return commandFromTitle;
+  }
+  if (kind !== "execute" || !title || GENERIC_EXECUTE_TITLES.has(title.toLowerCase())) {
+    return undefined;
+  }
+  return title;
 }
 
 function extractTextContentFromToolCallContent(
@@ -327,14 +349,14 @@ function makeToolCallState(
     return undefined;
   }
   const title = input.title?.trim() || undefined;
-  const command = extractToolCallCommand(input.rawInput, title);
+  const kind = normalizeToolKind(input.kind);
+  const command = extractToolCallCommand(input.rawInput, title, kind);
   const textContent = extractTextContentFromToolCallContent(input.content);
   const normalizedTitle =
     title && title.toLowerCase() !== "terminal" && title.toLowerCase() !== "tool call"
       ? title
       : undefined;
   const data: Record<string, unknown> = { toolCallId };
-  const kind = normalizeToolKind(input.kind);
   if (kind) {
     data.kind = kind;
   }
