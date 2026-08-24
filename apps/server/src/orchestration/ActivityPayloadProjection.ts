@@ -345,11 +345,17 @@ export function projectActivityPayload(
     return activity;
   }
 
+  const itemStatus = asRecord(data.item)?.status;
+  const projectedPayload =
+    payload.status === "completed" && (itemStatus === "failed" || itemStatus === "declined")
+      ? { ...payload, status: itemStatus }
+      : payload;
+
   if (payload.itemType === "mcp_tool_call") {
     return {
       ...activity,
       payload: {
-        ...payload,
+        ...projectedPayload,
         data: projectMcpToolCallData(data),
       },
     };
@@ -392,7 +398,7 @@ export function projectActivityPayload(
   return {
     ...activity,
     payload: {
-      ...payload,
+      ...projectedPayload,
       data: projectedData,
     },
   };
