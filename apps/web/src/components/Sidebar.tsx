@@ -30,7 +30,7 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
@@ -127,7 +127,9 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
+  filterSidebarItemsByEnvironment,
   hasUnseenCompletion,
+  isSidebarItemInScope,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -582,6 +584,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   projectCwdByKey: ReadonlyMap<string, string>;
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
+  environmentScopeId: EnvironmentId | null;
   scopedProjectKeys: ReadonlySet<string> | null;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
@@ -622,10 +625,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       if (session.promotedTo != null) {
         continue;
       }
-      if (
-        props.scopedProjectKeys !== null &&
-        !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
-      ) {
+      if (!isSidebarItemInScope(session, props.environmentScopeId, props.scopedProjectKeys)) {
         continue;
       }
       if (draftKey === props.routeDraftId) {
@@ -649,6 +649,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     draftThreadsByThreadKey,
     draftsByThreadKey,
     frozenActive,
+    props.environmentScopeId,
     props.routeDraftId,
     props.scopedProjectKeys,
   ]);
@@ -1804,12 +1805,27 @@ export default function Sidebar() {
     },
   });
   const [projectScopeMenuOpen, setProjectScopeMenuOpen] = useState(false);
+  const [environmentScopeMenuOpen, setEnvironmentScopeMenuOpen] = useState(false);
   const newThreadContext = useHandleNewThread();
   const openAddProjectCommandPalette = useCallback(
     () => openCommandPalette({ open: "add-project" }),
     [],
   );
   const { environments } = useEnvironments();
+  const [environmentScopeId, setEnvironmentScopeId] = useState<EnvironmentId | null>(null);
+  const scopedEnvironment = useMemo(
+    () =>
+      environmentScopeId === null
+        ? null
+        : (environments.find((environment) => environment.environmentId === environmentScopeId) ??
+          null),
+    [environmentScopeId, environments],
+  );
+  useEffect(() => {
+    if (environmentScopeId !== null && scopedEnvironment === null) {
+      setEnvironmentScopeId(null);
+    }
+  }, [environmentScopeId, scopedEnvironment]);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
@@ -1863,20 +1879,31 @@ export default function Sidebar() {
       }),
     [projectOrder, projects],
   );
+  const environmentScopedProjects = useMemo(
+    () => filterSidebarItemsByEnvironment(projects, environmentScopeId),
+    [environmentScopeId, projects],
+  );
+  const orderedEnvironmentScopedProjects = useMemo(
+    () => filterSidebarItemsByEnvironment(orderedProjects, environmentScopeId),
+    [environmentScopeId, orderedProjects],
+  );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects:
+          sidebarProjectSortOrder === "manual"
+            ? orderedEnvironmentScopedProjects
+            : environmentScopedProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
       }),
     [
       environmentLabelById,
-      orderedProjects,
+      environmentScopedProjects,
+      orderedEnvironmentScopedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
       sidebarProjectSortOrder,
     ],
   );
@@ -1980,10 +2007,7 @@ export default function Sidebar() {
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
         continue;
       }
-      if (
-        scopedProjectKeys !== null &&
-        !scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
-      ) {
+      if (!isSidebarItemInScope(session, environmentScopeId, scopedProjectKeys)) {
         continue;
       }
       count += 1;
@@ -1994,7 +2018,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, environmentScopeId, projectScopeKey]);
 
   const handleProjectSettings = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>, projectGroup: SidebarProjectSnapshot) => {
@@ -2034,8 +2058,7 @@ export default function Sidebar() {
     const visible = threads.filter(
       (thread) =>
         thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+        isSidebarItemInScope(thread, environmentScopeId, scopedProjectKeys),
     );
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2110,6 +2133,7 @@ export default function Sidebar() {
     autoSettleAfterDays,
     autoSettleOnMerge,
     changeRequestSnapshotByKey,
+    environmentScopeId,
     nowMinute,
     scopedProjectKeys,
     serverConfigs,
@@ -2167,7 +2191,7 @@ export default function Sidebar() {
   // filter context changes so a scope/search flip never inherits a deep
   // page state.
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_TAIL_INITIAL_COUNT);
-  const settledResetKey = projectScopeKey ?? "all";
+  const settledResetKey = `${environmentScopeId ?? "all"}:${projectScopeKey ?? "all"}`;
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -3453,7 +3477,7 @@ export default function Sidebar() {
                         type="button"
                         className="relative focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                         onClick={handleNewThreadClick}
-                        disabled={projects.length === 0}
+                        disabled={environmentScopedProjects.length === 0}
                         aria-label="New thread"
                       />
                     }
@@ -3488,6 +3512,55 @@ export default function Sidebar() {
                 </Tooltip>
               </div>
             </div>
+            {environments.length > 1 ? (
+              <div className="flex items-center gap-1">
+                <Menu open={environmentScopeMenuOpen} onOpenChange={setEnvironmentScopeMenuOpen}>
+                  <MenuTrigger
+                    render={
+                      <SidebarMenuButton
+                        aria-label="Filter threads by environment"
+                        className="min-w-0 flex-1 ps-[calc(var(--sidebar-row-content-inset)-1px)] focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                      />
+                    }
+                  >
+                    <ServerIcon className="size-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {scopedEnvironment?.label ?? "All environments"}
+                    </span>
+                    <ChevronDownIcon className="-mr-px size-4 shrink-0" />
+                  </MenuTrigger>
+                  <MenuPopup align="start" className="w-(--anchor-width)">
+                    <MenuRadioGroup
+                      value={environmentScopeId ?? "all"}
+                      onValueChange={(value) => {
+                        setEnvironmentScopeId(value === "all" ? null : (value as EnvironmentId));
+                        setProjectScopeKey(null);
+                      }}
+                    >
+                      <MenuRadioItem
+                        value="all"
+                        closeOnClick
+                        className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
+                      >
+                        <ServerIcon className="size-4 shrink-0" />
+                        <span className="min-w-0 truncate text-sm">All environments</span>
+                      </MenuRadioItem>
+                      {environments.map((environment) => (
+                        <MenuRadioItem
+                          key={environment.environmentId}
+                          value={environment.environmentId}
+                          closeOnClick
+                          className="h-8 min-h-8 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
+                        >
+                          <ServerIcon className="size-4 shrink-0" />
+                          <span className="min-w-0 truncate text-sm">{environment.label}</span>
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+              </div>
+            ) : null}
             {projectGroups.length > 0 ? (
               <div className="flex items-center gap-1">
                 <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
@@ -3778,6 +3851,7 @@ export default function Sidebar() {
                       projectDisplayNameByKey={projectDisplayNameByKey}
                       projectCwdByKey={projectCwdByKey}
                       projectFaviconPathByKey={projectFaviconPathByKey}
+                      environmentScopeId={environmentScopeId}
                       scopedProjectKeys={scopedProjectKeys}
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}
@@ -3933,9 +4007,13 @@ export default function Sidebar() {
             settledThreads.length ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
-              {projects.length === 0 ? (
+              {environmentScopedProjects.length === 0 ? (
                 <>
-                  <span>No projects yet</span>
+                  <span>
+                    {projects.length === 0
+                      ? "No projects yet"
+                      : `No projects in ${scopedEnvironment?.label ?? "this environment"}`}
+                  </span>
                   <button
                     type="button"
                     onClick={openAddProjectCommandPalette}
@@ -3947,6 +4025,8 @@ export default function Sidebar() {
                 </>
               ) : scopedProjectGroup ? (
                 `No threads in ${scopedProjectGroup.displayName} yet`
+              ) : scopedEnvironment ? (
+                `No threads in ${scopedEnvironment.label} yet`
               ) : (
                 "No threads yet"
               )}

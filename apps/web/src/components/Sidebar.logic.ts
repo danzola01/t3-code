@@ -55,6 +55,31 @@ type LogicalSidebarProject = SidebarProject & {
   }[];
 };
 
+type SidebarScopedItem = {
+  readonly environmentId: string;
+  readonly projectId: string;
+};
+
+export function filterSidebarItemsByEnvironment<T extends { readonly environmentId: string }>(
+  items: readonly T[],
+  environmentId: string | null,
+): readonly T[] {
+  return environmentId === null
+    ? items
+    : items.filter((item) => item.environmentId === environmentId);
+}
+
+export function isSidebarItemInScope(
+  item: SidebarScopedItem,
+  environmentId: string | null,
+  projectKeys: ReadonlySet<string> | null,
+): boolean {
+  return (
+    (environmentId === null || item.environmentId === environmentId) &&
+    (projectKeys === null || projectKeys.has(`${item.environmentId}:${item.projectId}`))
+  );
+}
+
 export type ThreadTraversalDirection = "previous" | "next";
 
 export async function archiveSelectedThreadEntries<

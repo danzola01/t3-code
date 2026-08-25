@@ -6,6 +6,7 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
+  filterSidebarItemsByEnvironment,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
   resolveAdjacentThreadId,
@@ -15,6 +16,7 @@ import {
   hasUnseenCompletion,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
+  isSidebarItemInScope,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
@@ -54,6 +56,35 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("sidebar environment scope", () => {
+  const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+  const items = [
+    { environmentId: localEnvironmentId, id: "local" },
+    { environmentId: remoteEnvironmentId, id: "remote" },
+  ];
+
+  it("keeps every item when all environments are selected", () => {
+    expect(filterSidebarItemsByEnvironment(items, null)).toBe(items);
+  });
+
+  it("keeps only items from the selected environment", () => {
+    expect(filterSidebarItemsByEnvironment(items, remoteEnvironmentId)).toEqual([items[1]]);
+  });
+
+  it("requires both the environment and project scopes to match", () => {
+    const item = {
+      environmentId: remoteEnvironmentId,
+      projectId: ProjectId.make("project-remote"),
+    };
+    const projectKeys = new Set([`${remoteEnvironmentId}:project-remote`]);
+
+    expect(isSidebarItemInScope(item, remoteEnvironmentId, projectKeys)).toBe(true);
+    expect(isSidebarItemInScope(item, localEnvironmentId, projectKeys)).toBe(false);
+    expect(isSidebarItemInScope(item, remoteEnvironmentId, new Set())).toBe(false);
+    expect(isSidebarItemInScope(item, null, null)).toBe(true);
+  });
+});
 
 describe("animatePinnedLayoutChanges", () => {
   const baseArgs: Parameters<AnimateLayoutChanges>[0] = {
