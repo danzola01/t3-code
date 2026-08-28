@@ -29,8 +29,15 @@ const InitializeRequest = jsonRpcRequest("initialize", AcpSchema.InitializeReque
 const InitializeResponse = jsonRpcResponse(AcpSchema.InitializeResponse);
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
+const NewSessionRequest = jsonRpcRequest("session/new", AcpSchema.NewSessionRequest);
+const ErrorResponse = Schema.Struct({
+  jsonrpc: Schema.Literal("2.0"),
+  id: Schema.Union([Schema.Number, Schema.String]),
+  error: AcpSchema.Error,
+});
 const PromptRequest = jsonRpcRequest("session/prompt", AcpSchema.PromptRequest);
 const PromptResponse = jsonRpcResponse(AcpSchema.PromptResponse);
+const decodeNewSessionRequestLine = Schema.decodeEffect(Schema.fromJsonString(NewSessionRequest));
 const decodePromptRequestLine = Schema.decodeEffect(Schema.fromJsonString(PromptRequest));
 const XAiPromptCompleteNotification = jsonRpcNotification(
   "_x.ai/session/prompt_complete",
@@ -486,6 +493,43 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
       assert.deepEqual(yield* Fiber.join(extFiber), { ok: true });
       yield* Scope.close(scope, Exit.void);
     }),
+  );
+
+  it.effect("maps standard JSON-RPC core errors to typed ACP request failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { stdio, input, output } = yield* makeInMemoryStdio();
+        const acp = yield* AcpClient.make(stdio);
+
+        const sessionFiber = yield* acp.agent
+          .createSession({ cwd: process.cwd(), mcpServers: [] })
+          .pipe(Effect.forkScoped);
+        const request = yield* decodeNewSessionRequestLine(yield* Queue.take(output));
+
+        yield* Queue.offer(
+          input,
+          yield* encodeJsonl(ErrorResponse, {
+            jsonrpc: "2.0",
+            id: request.id,
+            error: {
+              code: -32603,
+              message: "Internal error",
+              data: { details: "No previous sessions found for this project" },
+            },
+          }),
+        );
+
+        const error = yield* Fiber.join(sessionFiber).pipe(Effect.flip);
+        assert.instanceOf(error, AcpError.AcpRequestError);
+        assert.deepInclude(error, {
+          code: -32603,
+          errorMessage: "Internal error",
+          data: { details: "No previous sessions found for this project" },
+          method: "session/new",
+          operation: "receive-response",
+        });
+      }),
+    ),
   );
 
   it.effect(

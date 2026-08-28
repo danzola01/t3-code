@@ -378,7 +378,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       case "Request":
         return handleRequestEncoded(message);
       case "Exit":
-        return handleExitEncoded(message);
+        return handleExitEncoded(normalizeProtocolErrorExit(message));
       case "Chunk":
         return Ref.get(extPending).pipe(
           Effect.flatMap((pending) => {
@@ -571,4 +571,23 @@ function isProtocolError(
     "message" in value &&
     typeof value.message === "string"
   );
+}
+
+function normalizeProtocolErrorExit(
+  message: RpcMessage.ResponseExitEncoded,
+): RpcMessage.ResponseExitEncoded {
+  if (message.exit._tag !== "Failure" || message.exit.cause.length !== 1) {
+    return message;
+  }
+  const reason = message.exit.cause[0];
+  if (reason?._tag !== "Die" || !isProtocolError(reason.defect)) {
+    return message;
+  }
+  return {
+    ...message,
+    exit: {
+      _tag: "Failure",
+      cause: [{ _tag: "Fail", error: reason.defect }],
+    },
+  };
 }
