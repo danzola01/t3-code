@@ -23,6 +23,7 @@ import {
   rankPullRequestMatches,
   scorePullRequestMatch,
   retainVisiblePullRequestStatsBatches,
+  visiblePullRequestGroupEntries,
   withDiffStat,
   resolveProjectScope,
   resolveQueryEnvironmentIds,
@@ -344,6 +345,35 @@ describe("pull request grouping", () => {
       VIEWERS,
     );
     expect(groups.map((group) => group.key)).toEqual(["authored"]);
+  });
+
+  it("hides Others when collapsed but keeps its selected row as an anchor", () => {
+    const groups = groupPullRequestsByInvolvement(
+      [entry({ number: 1 }), entry({ number: 2 })],
+      NO_VIEWERS,
+    );
+    const others = groups[0]!;
+
+    expect(visiblePullRequestGroupEntries(others, false, () => false)).toEqual([]);
+    expect(
+      visiblePullRequestGroupEntries(others, false, (item) => item.number === 2).map(
+        (item) => item.number,
+      ),
+    ).toEqual([2]);
+    expect(
+      visiblePullRequestGroupEntries(others, true, () => false).map((item) => item.number),
+    ).toEqual([1, 2]);
+  });
+
+  it("does not collapse an ungrouped list that merely uses the Others key", () => {
+    const rows = [entry({ number: 1 })];
+    expect(
+      visiblePullRequestGroupEntries(
+        { key: "others", label: "", entries: rows },
+        false,
+        () => false,
+      ),
+    ).toEqual(rows);
   });
 });
 

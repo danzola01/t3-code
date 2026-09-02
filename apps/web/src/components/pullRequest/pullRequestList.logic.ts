@@ -421,6 +421,21 @@ export function groupPullRequestsByInvolvement<Entry extends ScopedEntry>(
 }
 
 /**
+ * Rows shown beneath a pull-request group header. Only the labeled Others group is a disclosure:
+ * lists flattened by a filter or alternate sort also use the `others` key, but have no section
+ * header and must therefore stay visible. A selected row remains in a collapsed group so the
+ * open detail never loses its highlighted anchor in the list.
+ */
+export function visiblePullRequestGroupEntries<Entry extends PullRequestListEntry>(
+  group: PullRequestGroup<Entry>,
+  othersExpanded: boolean,
+  isSelected: (entry: Entry) => boolean,
+): ReadonlyArray<Entry> {
+  if (group.key !== "others" || group.label.length === 0 || othersExpanded) return group.entries;
+  return group.entries.filter(isSelected);
+}
+
+/**
  * Repository plus number is unique on one host, so the host makes the key unique overall — and
  * the environment on top of that, because two connected machines can hold the same repository and
  * would otherwise contribute two rows under one key.

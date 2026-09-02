@@ -49,6 +49,8 @@ T3 Code works with the platforms your team already uses:
 
 - See if your current branch already has an open PR/MR
 - Open several reviews from the **Pull requests** page as tabs in the right panel
+- Collapse the **Others** section on the **Pull requests** page to keep authored and
+  review-requested work in focus
 - Filter the list by author or labels, rank authors by merges in the loaded results, see label and
   change-size context on each row, and sort the results currently shown by update time, creation
   time, or change size

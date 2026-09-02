@@ -1,5 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { pullRequestHostOf, ThreadId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   EnvironmentId,
   ProjectId,
@@ -68,6 +69,7 @@ import {
   pullRequestStatsRefreshBatches,
   pullRequestStatsRequestBatches,
   retainVisiblePullRequestStatsBatches,
+  visiblePullRequestGroupEntries,
   type EnvironmentPullRequestEntry,
   type MergedPullRequestList,
   type PullRequestDiffStats,
@@ -106,6 +108,7 @@ import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../
 import { SidebarInset } from "../components/ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { toSortableTimestamp } from "../lib/threadSort";
 import {
   selectActiveRightPanelSurface,
@@ -219,6 +222,7 @@ const EMPTY_PREVIEW_DESKTOP_STATE = {};
 const EMPTY_TERMINAL_LABELS = new Map<string, string>();
 const EMPTY_PENDING_SURFACES = new Set<string>();
 const MAX_SEARCH_LABEL_CANDIDATES = 100;
+const OTHERS_GROUP_EXPANDED_KEY = "t3code:pull-requests:others-expanded";
 
 function pullRequestSearchLabels(raw: unknown): Partial<Pick<PullRequestsSearch, "labels">> {
   const values = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).slice(
@@ -1154,53 +1158,6 @@ function PullRequestsRouteView() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    // A failed page must stop the observer. Retained rows keep the sentinel on screen, so
-    // re-arming it after a failure would ask for the next page again, forever.
-    //
-    // Rows on screen are also what makes reaching the sentinel mean anything: with none, it
-    // sits directly below the empty state and is always in view, so a search that matches
-    // nothing would page through the whole host on its own — one listing of every repository
-    // per step — while the reader looks at an empty page. With nothing to scroll past, the
-    // next page is asked for rather than assumed.
-    if (
-      !sentinel ||
-      entries.length === 0 ||
-      listData?.truncated !== true ||
-      listQuery.isPending ||
-      listQuery.error !== null ||
-      // The rows on screen belong to the previous question, so nothing about them says where
-      // this one carries on from. Growing the page under them would answer neither.
-      showingCarried ||
-      // Asking past the cap is refused, which would strand the list on an error the retry
-      // could never clear, so growth stops here and the rest stays on the host. A continuation
-      // does not grow the page at all, so the cap does not apply to it.
-      (!canContinue && pageSize >= MAX_PAGE_SIZE)
-    ) {
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (observed) => {
-        if (observed.some((entry) => entry.isIntersecting)) {
-          loadMore();
-        }
-      },
-      // Start the next page slightly before the sentinel is on screen.
-      { root: scrollRef.current, rootMargin: "240px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [
-    entries.length,
-    filterKey,
-    canContinue,
-    listData?.truncated,
-    listQuery.error,
-    listQuery.isPending,
-    pageSize,
-    showingCarried,
-  ]);
 
   /**
    * The line counts, asked for once the rows are on screen. On GitHub they are forty per cent of
@@ -1249,6 +1206,69 @@ function PullRequestsRouteView() {
     scopeKey,
     search.involvement,
     viewers,
+  ]);
+  const [othersExpanded, setOthersExpanded] = useLocalStorage(
+    OTHERS_GROUP_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
+  const toggleOthers = useCallback(
+    () => setOthersExpanded((expanded) => !expanded),
+    [setOthersExpanded],
+  );
+  const othersGroupCollapsed =
+    sort === "updated" &&
+    !othersExpanded &&
+    groups.some((group) => group.key === "others" && group.label.length > 0);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    // A failed page must stop the observer. Retained rows keep the sentinel on screen, so
+    // re-arming it after a failure would ask for the next page again, forever.
+    //
+    // Rows on screen are also what makes reaching the sentinel mean anything: with none, it
+    // sits directly below the empty state and is always in view, so a search that matches
+    // nothing would page through the whole host on its own — one listing of every repository
+    // per step — while the reader looks at an empty page. A collapsed Others shelf likewise
+    // cannot gain visible rows from paging, so it resumes only after the shelf is expanded.
+    if (
+      !sentinel ||
+      entries.length === 0 ||
+      othersGroupCollapsed ||
+      listData?.truncated !== true ||
+      listQuery.isPending ||
+      listQuery.error !== null ||
+      // The rows on screen belong to the previous question, so nothing about them says where
+      // this one carries on from. Growing the page under them would answer neither.
+      showingCarried ||
+      // Asking past the cap is refused, which would strand the list on an error the retry
+      // could never clear, so growth stops here and the rest stays on the host. A continuation
+      // does not grow the page at all, so the cap does not apply to it.
+      (!canContinue && pageSize >= MAX_PAGE_SIZE)
+    ) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (observed) => {
+        if (observed.some((entry) => entry.isIntersecting)) {
+          loadMore();
+        }
+      },
+      // Start the next page slightly before the sentinel is on screen.
+      { root: scrollRef.current, rootMargin: "240px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    entries.length,
+    filterKey,
+    canContinue,
+    listData?.truncated,
+    listQuery.error,
+    listQuery.isPending,
+    othersGroupCollapsed,
+    pageSize,
+    showingCarried,
   ]);
 
   // Date sorts keep optional line-count reads near the viewport. Size sorts need every loaded
@@ -1613,12 +1633,38 @@ function PullRequestsRouteView() {
         <div className="space-y-3">
           {displayGroups.map((group) => (
             <div key={group.key} className="space-y-0.5">
-              {group.label ? (
+              {group.key === "others" && group.label ? (
+                <button
+                  type="button"
+                  onClick={toggleOthers}
+                  aria-expanded={othersExpanded}
+                  data-testid="pull-request-others-group-toggle"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 pb-0.5 text-left"
+                >
+                  <span className="text-xs font-medium text-muted-foreground/70">
+                    {othersExpanded ? group.label : `${group.label} (${group.entries.length})`}
+                  </span>
+                  <span className="h-px flex-1 bg-border/60" />
+                  <ChevronDownIcon
+                    aria-hidden
+                    className={cn(
+                      "size-3 text-muted-foreground/50 transition-transform",
+                      othersExpanded && "rotate-180",
+                    )}
+                  />
+                </button>
+              ) : group.label ? (
                 <h2 className="px-3 pb-0.5 text-xs font-medium text-muted-foreground/70">
                   {group.label}
                 </h2>
               ) : null}
-              {group.entries.map((entry) => {
+              {visiblePullRequestGroupEntries(group, othersExpanded, (entry) =>
+                Boolean(
+                  selected?.environmentId === entry.environmentId &&
+                  selected.repository === entry.repository &&
+                  selected.number === entry.number,
+                ),
+              ).map((entry) => {
                 const entryKey = pullRequestEntryKey(entry);
                 return (
                   <PullRequestRow
@@ -1660,7 +1706,7 @@ function PullRequestsRouteView() {
           </Button>
         </div>
       ) : null}
-      {listData?.truncated && entries.length > 0 ? (
+      {listData?.truncated && entries.length > 0 && !othersGroupCollapsed ? (
         <div ref={sentinelRef} className="flex justify-center py-2 text-xs text-muted-foreground">
           {loadingMore ? (
             <span className="flex items-center gap-2">
