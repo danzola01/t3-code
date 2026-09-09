@@ -20,11 +20,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -41,12 +37,10 @@ import { makeGeminiTextGeneration } from "./GeminiTextGeneration.ts";
 const decodeGeminiSettings = Schema.decodeSync(GeminiSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("gemini");
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
+  provider: DRIVER_KIND,
+  packageName: null,
+});
 
 export type GeminiDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
@@ -107,11 +101,6 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies GeminiSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
-
       const adapter = yield* makeGeminiAdapter(effectiveConfig, {
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
@@ -129,7 +118,7 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<GeminiSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -139,7 +128,7 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
           enrichGeminiSnapshot({
             snapshot: currentSnapshot,
-            maintenanceCapabilities,
+            maintenanceCapabilities: MAINTENANCE_CAPABILITIES,
             enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
             publishSnapshot,
             httpClient,

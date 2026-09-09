@@ -985,6 +985,7 @@ export function makeGeminiAdapter(
                     }
                     return;
                   }
+                  case "ThoughtDelta":
                   case "ContentDelta":
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
@@ -992,8 +993,10 @@ export function makeGeminiAdapter(
                         provider: PROVIDER,
                         threadId: ctx.threadId,
                         turnId: notificationTurnId,
-                        ...(event.itemId ? { itemId: event.itemId } : {}),
-                        streamKind: event.streamKind,
+                        ...(event._tag === "ContentDelta" && event.itemId
+                          ? { itemId: event.itemId }
+                          : {}),
+                        ...(event._tag === "ThoughtDelta" ? { streamKind: "reasoning_text" } : {}),
                         text: event.text,
                         rawPayload: event.rawPayload,
                       }),

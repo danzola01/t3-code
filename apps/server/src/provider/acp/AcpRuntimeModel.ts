@@ -87,6 +87,16 @@ export type AcpParsedSessionEvent =
       readonly modeId: string;
     }
   | {
+      readonly _tag: "AvailableCommandsUpdated";
+      readonly availableCommands: ReadonlyArray<EffectAcpSchema.AvailableCommand>;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "ConfigOptionsUpdated";
+      readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+      readonly rawPayload: unknown;
+    }
+  | {
       readonly _tag: "AssistantItemStarted";
       readonly itemId: string;
     }
@@ -107,7 +117,11 @@ export type AcpParsedSessionEvent =
   | {
       readonly _tag: "ContentDelta";
       readonly itemId?: string;
-      readonly streamKind: "assistant_text" | "reasoning_text";
+      readonly text: string;
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "ThoughtDelta";
       readonly text: string;
       readonly rawPayload: unknown;
     };
@@ -814,6 +828,22 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
   let modeId: string | undefined;
 
   switch (upd.sessionUpdate) {
+    case "config_option_update": {
+      events.push({
+        _tag: "ConfigOptionsUpdated",
+        configOptions: upd.configOptions,
+        rawPayload: params,
+      });
+      break;
+    }
+    case "available_commands_update": {
+      events.push({
+        _tag: "AvailableCommandsUpdated",
+        availableCommands: upd.availableCommands,
+        rawPayload: params,
+      });
+      break;
+    }
     case "current_mode_update": {
       modeId = upd.currentModeId.trim();
       if (modeId) {
@@ -868,7 +898,6 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       if (upd.content.type === "text" && upd.content.text.length > 0) {
         events.push({
           _tag: "ContentDelta",
-          streamKind: "assistant_text",
           text: upd.content.text,
           rawPayload: params,
         });
@@ -878,8 +907,7 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
     case "agent_thought_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
         events.push({
-          _tag: "ContentDelta",
-          streamKind: "reasoning_text",
+          _tag: "ThoughtDelta",
           text: upd.content.text,
           rawPayload: params,
         });

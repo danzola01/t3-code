@@ -360,7 +360,6 @@ describe("AcpRuntimeModel", () => {
     expect(contentResult.events).toEqual([
       {
         _tag: "ContentDelta",
-        streamKind: "assistant_text",
         text: "hello from acp",
         rawPayload: {
           sessionId: "session-1",
@@ -374,29 +373,45 @@ describe("AcpRuntimeModel", () => {
         },
       },
     ]);
+  });
 
-    const thoughtResult = parseSessionUpdateEvent({
+  it("keeps thought chunks separate from assistant text", () => {
+    const notification = {
       sessionId: "session-1",
       update: {
         sessionUpdate: "agent_thought_chunk",
-        content: { type: "text", text: "considering the change" },
+        content: { type: "text", text: "Inspect the current implementation first." },
       },
-    } satisfies EffectAcpSchema.SessionNotification);
+    } satisfies EffectAcpSchema.SessionNotification;
 
-    expect(thoughtResult.events).toEqual([
+    expect(parseSessionUpdateEvent(notification).events).toEqual([
       {
-        _tag: "ContentDelta",
-        streamKind: "reasoning_text",
-        text: "considering the change",
-        rawPayload: {
-          sessionId: "session-1",
-          update: {
-            sessionUpdate: "agent_thought_chunk",
-            content: { type: "text", text: "considering the change" },
-          },
-        },
+        _tag: "ThoughtDelta",
+        text: "Inspect the current implementation first.",
+        rawPayload: notification,
       },
     ]);
+  });
+
+  it("preserves native command inputs and empty command lists", () => {
+    const availableCommands = [
+      { name: "plan", description: "Plan a task", input: { hint: "task" } },
+      { name: "logout", description: "Sign out" },
+    ] satisfies ReadonlyArray<EffectAcpSchema.AvailableCommand>;
+
+    for (const commands of [availableCommands, []]) {
+      const notification = {
+        sessionId: "session-1",
+        update: { sessionUpdate: "available_commands_update", availableCommands: commands },
+      } satisfies EffectAcpSchema.SessionNotification;
+      expect(parseSessionUpdateEvent(notification).events).toEqual([
+        {
+          _tag: "AvailableCommandsUpdated",
+          availableCommands: commands,
+          rawPayload: notification,
+        },
+      ]);
+    }
   });
 
   it("keeps permission request parsing compatible with loose extension payloads", () => {

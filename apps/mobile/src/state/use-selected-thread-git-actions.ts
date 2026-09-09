@@ -57,7 +57,11 @@ export function useSelectedThreadGitActions() {
   );
   const branchState = useBranches(branchTarget);
   const cachedBranchRefsRef = useRef(branchState.data?.refs ?? []);
-  cachedBranchRefsRef.current = branchState.data?.refs ?? cachedBranchRefsRef.current;
+  useEffect(() => {
+    if (branchState.data?.refs) {
+      cachedBranchRefsRef.current = branchState.data.refs;
+    }
+  }, [branchState.data?.refs]);
   const updateThreadGitContext = useCallback(
     async (
       thread: NonNullable<typeof selectedThread>,
