@@ -142,7 +142,19 @@ export const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* 
   const skillsByName = new Map<string, ServerProviderSkill>();
 
   for (const root of roots) {
-    for (const relativePath of yield* listRelativeFiles(root.directory, "skill.md")) {
+    // Gemini loads SKILL.md and */SKILL.md. Read those paths directly so linked
+    // skills work without recursively traversing their assets or repositories.
+    const entries = yield* fileSystem
+      .readDirectory(root.directory)
+      .pipe(Effect.orElseSucceed((): string[] => []));
+    const skillFiles = [
+      "SKILL.md",
+      ...entries
+        .filter((entry) => entry !== ".git" && entry !== "node_modules")
+        .sort()
+        .map((entry) => path.join(entry, "SKILL.md")),
+    ];
+    for (const relativePath of skillFiles) {
       const skillPath = path.join(root.directory, relativePath);
       const contents = yield* fileSystem
         .readFileString(skillPath)

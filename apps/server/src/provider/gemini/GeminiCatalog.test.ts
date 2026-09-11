@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -23,6 +25,135 @@ const writeFile = Effect.fn(function* (filePath: string, contents: string) {
 });
 
 it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
+  it.effect("discovers the four linked Ping skills alongside regular user skills", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-linked-skill-" });
+      const home = path.join(root, "gemini-home");
+      const skillsDirectory = path.join(home, ".gemini", "skills");
+      const regularNames = [
+        "ciam-security-reviewer",
+        "format-security-findings",
+        "hallmark",
+        "handoff",
+        "teach",
+        "unslop",
+        "writing-for-agents",
+      ];
+      const linkedNames = [
+        "ping-app-integration",
+        "ping-foundation",
+        "ping-quickstart",
+        "ping-universal-services",
+      ];
+      for (const name of regularNames) {
+        yield* writeFile(
+          path.join(skillsDirectory, name, "SKILL.md"),
+          `---\nname: ${name}\ndescription: Regular skill.\n---\n`,
+        );
+      }
+      for (const name of linkedNames) {
+        const source = path.join(root, "external", name);
+        yield* writeFile(
+          path.join(source, "SKILL.md"),
+          `---\nname: ${name}\ndescription: Linked skill.\n---\n`,
+        );
+        yield* fileSystem.symlink(
+          path.relative(skillsDirectory, source),
+          path.join(skillsDirectory, name),
+        );
+      }
+      yield* writeFile(
+        path.join(root, "external", "ping-foundation", "references", "example", "SKILL.md"),
+        "---\nname: example\ndescription: A bundled example, not an installed skill.\n---\n",
+      );
+      yield* fileSystem.symlink(path.join(root, "missing"), path.join(skillsDirectory, "broken"));
+
+      // Exercise recursive listings that include symlinks without descending into
+      // them, even on hosts where the default string listing follows links.
+      const catalog = yield* discoverGeminiCatalog({ homePath: home }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fileSystem,
+          readDirectory: (directory, options) =>
+            options?.recursive
+              ? Effect.tryPromise(() =>
+                  NodeFSP.readdir(directory, { recursive: true, withFileTypes: true }),
+                ).pipe(
+                  Effect.map((entries) =>
+                    entries.map((entry) =>
+                      path.relative(directory, path.join(entry.parentPath, entry.name)),
+                    ),
+                  ),
+                  Effect.catch(() => fileSystem.readDirectory(directory, options)),
+                )
+              : fileSystem.readDirectory(directory, options),
+        }),
+      );
+      assert.deepEqual(
+        catalog.skills.map((skill) => skill.name),
+        [...regularNames, ...linkedNames].sort(),
+      );
+      const expanded = yield* expandGeminiSkillMentions(
+        { homePath: home },
+        path.join(root, "workspace"),
+        "$ping-foundation set up SSO",
+      );
+      assert.include(
+        expanded,
+        "Activate these Gemini CLI skills with the activate_skill tool before proceeding: ping-foundation",
+      );
+
+      yield* writeFile(
+        path.join(home, ".gemini", "settings.json"),
+        encodeUnknownJson({ skills: { disabled: ["ping-foundation"] } }),
+      );
+      const disabledCatalog = yield* discoverGeminiCatalog({ homePath: home });
+      assert.strictEqual(
+        disabledCatalog.skills.find((skill) => skill.name === "ping-foundation")?.enabled,
+        false,
+      );
+      const input = "$ping-foundation set up SSO";
+      assert.strictEqual(
+        yield* expandGeminiSkillMentions({ homePath: home }, path.join(root, "workspace"), input),
+        input,
+      );
+      yield* fileSystem.remove(path.join(skillsDirectory, "ping-foundation"));
+      const unlinkedCatalog = yield* discoverGeminiCatalog({ homePath: home });
+      assert.isFalse(unlinkedCatalog.skills.some((skill) => skill.name === "ping-foundation"));
+    }),
+  );
+
+  it.effect("discovers linked skills even when their asset directories cannot be read", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-gemini-linked-assets-",
+      });
+      const home = path.join(root, "gemini-home");
+      const source = path.join(root, "skill-source");
+      const assets = path.join(source, "assets");
+      const skillsDirectory = path.join(home, ".gemini", "skills");
+      yield* writeFile(
+        path.join(source, "SKILL.md"),
+        "---\nname: linked-review\ndescription: Review linked code.\n---\n",
+      );
+      yield* fileSystem.makeDirectory(assets);
+      yield* fileSystem.makeDirectory(skillsDirectory, { recursive: true });
+      yield* fileSystem.symlink(source, path.join(skillsDirectory, "linked-review"));
+      yield* fileSystem.chmod(assets, 0o000);
+
+      const catalog = yield* discoverGeminiCatalog({ homePath: home }).pipe(
+        Effect.ensuring(fileSystem.chmod(assets, 0o700).pipe(Effect.orDie)),
+      );
+      assert.deepEqual(
+        catalog.skills.map((skill) => skill.name),
+        ["linked-review"],
+      );
+    }),
+  );
+
   it.effect("discovers user and project commands and skills with project precedence", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

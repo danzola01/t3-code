@@ -58,7 +58,8 @@ to that topic so the sidebar stays aligned with Gemini's current work.
 
 ## Skills And Custom Commands
 
-Gemini skills are discovered from the active Gemini home and from `.gemini/skills` in the project.
+Gemini skills are discovered from the active Gemini home and from `.gemini/skills` in the project,
+including skills added with `gemini skills link <path>`.
 Disabled skills in Gemini's `settings.json` stay disabled. Selecting a skill from T3 Code asks
 Gemini to load it through the `activate_skill` tool.
 
