@@ -12,30 +12,18 @@ import { parse as parseToml } from "smol-toml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { parse as parseYamlDocument } from "yaml";
 
-import { resolveGeminiConfigDir } from "./GeminiHome.ts";
+import type * as EffectAcpSchema from "effect-acp/schema";
+
+import { readGeminiDiscoverySettings, resolveGeminiConfigDir } from "./GeminiHome.ts";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const TOML_EXTENSION = ".toml";
-const MAX_INJECTED_FILE_BYTES = 1_000_000;
-const MAX_INJECTED_DIRECTORY_FILES = 100;
 
 const GeminiCommandDefinition = Schema.Struct({
   prompt: Schema.String,
   description: Schema.optional(Schema.String),
 });
 const decodeGeminiCommandDefinition = Schema.decodeUnknownOption(GeminiCommandDefinition);
-
-const GeminiSettingsFile = Schema.Struct({
-  skills: Schema.optional(
-    Schema.Struct({
-      enabled: Schema.optional(Schema.Boolean),
-      disabled: Schema.optional(Schema.Array(Schema.String)),
-    }),
-  ),
-});
-const decodeGeminiSettingsFile = Schema.decodeUnknownOption(
-  Schema.fromJsonString(GeminiSettingsFile),
-);
 
 export interface GeminiCustomCommand {
   readonly name: string;
@@ -58,7 +46,7 @@ export const GEMINI_ACP_SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand
   {
     name: "memory",
     description: "Inspect or refresh Gemini CLI memory.",
-    input: { hint: "show | refresh | add <text>" },
+    input: { hint: "show | refresh" },
   },
   { name: "restore", description: "Restore files from a Gemini CLI checkpoint." },
 ];
@@ -104,28 +92,6 @@ function parseSkillMetadata(contents: string): {
   }
 }
 
-const readSkillSettings = Effect.fn("gemini.readSkillSettings")(function* (
-  configDir: string,
-): Effect.fn.Return<
-  { readonly enabled: boolean; readonly disabled: ReadonlySet<string> },
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const contents = yield* fileSystem
-    .readFileString(path.join(configDir, "settings.json"))
-    .pipe(Effect.orElseSucceed(() => undefined));
-  if (contents === undefined) return { enabled: true, disabled: new Set<string>() };
-  return Option.match(decodeGeminiSettingsFile(contents), {
-    onNone: () => ({ enabled: true, disabled: new Set<string>() }),
-    onSome: (settings) => ({
-      enabled: settings.skills?.enabled ?? true,
-      disabled: new Set(settings.skills?.disabled ?? []),
-    }),
-  });
-});
-
 export const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* (
   config: Pick<GeminiSettings, "homePath">,
   cwd?: string,
@@ -134,10 +100,16 @@ export const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const configDir = yield* resolveGeminiConfigDir(config, environment);
-  const skillSettings = yield* readSkillSettings(configDir);
+  const settings = yield* readGeminiDiscoverySettings(config, environment, cwd);
   const roots = [
     { directory: path.join(configDir, "skills"), scope: "user" as const },
-    ...(cwd ? [{ directory: path.join(cwd, ".gemini", "skills"), scope: "project" as const }] : []),
+    { directory: path.join(path.dirname(configDir), ".agents", "skills"), scope: "user" as const },
+    ...(cwd && settings.workspaceTrusted
+      ? [
+          { directory: path.join(cwd, ".gemini", "skills"), scope: "project" as const },
+          { directory: path.join(cwd, ".agents", "skills"), scope: "project" as const },
+        ]
+      : []),
   ];
   const skillsByName = new Map<string, ServerProviderSkill>();
 
@@ -169,7 +141,7 @@ export const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* 
         name,
         path: skillPath,
         scope: root.scope,
-        enabled: skillSettings.enabled && !skillSettings.disabled.has(name),
+        enabled: settings.skillsEnabled && !settings.disabledSkills.has(name),
         ...(metadata.description ? { description: metadata.description } : {}),
       });
     }
@@ -186,9 +158,10 @@ export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomComma
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const configDir = yield* resolveGeminiConfigDir(config, environment);
+  const settings = yield* readGeminiDiscoverySettings(config, environment, cwd);
   const roots = [
     { directory: path.join(configDir, "commands"), scope: "user" as const },
-    ...(cwd
+    ...(cwd && settings.workspaceTrusted
       ? [{ directory: path.join(cwd, ".gemini", "commands"), scope: "project" as const }]
       : []),
   ];
@@ -234,14 +207,13 @@ export const discoverGeminiCatalog = Effect.fn("discoverGeminiCatalog")(function
   config: Pick<GeminiSettings, "homePath">,
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  nativeCommands: ReadonlyArray<ServerProviderSlashCommand> = GEMINI_ACP_SLASH_COMMANDS,
 ): Effect.fn.Return<GeminiCatalog, never, FileSystem.FileSystem | Path.Path> {
   const [customCommands, skills] = yield* Effect.all([
     discoverGeminiCustomCommands(config, cwd, environment),
     discoverGeminiSkills(config, cwd, environment),
   ]);
-  const slashCommands = new Map(
-    GEMINI_ACP_SLASH_COMMANDS.map((command) => [command.name, command] as const),
-  );
+  const slashCommands = new Map(nativeCommands.map((command) => [command.name, command] as const));
   for (const command of customCommands) {
     slashCommands.set(command.name, {
       name: command.name,
@@ -280,48 +252,22 @@ function extractInjections(text: string, trigger: "@{" | "!{") {
   return injections;
 }
 
-const injectGeminiFiles = Effect.fn("injectGeminiFiles")(function* (
-  prompt: string,
-  cwd: string,
-): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
-  const fileSystem = yield* FileSystem.FileSystem;
+// ACP resource links leave ignore rules, file limits and access checks to Gemini.
+const linkGeminiFiles = Effect.fn("linkGeminiFiles")(function* (prompt: string, cwd: string) {
   const path = yield* Path.Path;
-  const injections = extractInjections(prompt, "@{");
-  let result = prompt;
-  for (const injection of injections.toReversed()) {
-    const resolved = path.resolve(cwd, injection.content);
-    const relative = path.relative(cwd, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
-
-    let replacement: string | undefined;
-    const directContents = yield* fileSystem
-      .readFileString(resolved)
-      .pipe(Effect.orElseSucceed(() => undefined));
-    if (directContents !== undefined) {
-      replacement = directContents.slice(0, MAX_INJECTED_FILE_BYTES);
-    } else {
-      const entries = (yield* listRelativeFiles(resolved, ""))
-        .filter((entry) => !entry.includes(`${path.sep}.git${path.sep}`))
-        .slice(0, MAX_INJECTED_DIRECTORY_FILES);
-      let remaining = MAX_INJECTED_FILE_BYTES;
-      const chunks: string[] = [];
-      for (const entry of entries) {
-        if (remaining <= 0) break;
-        const contents = yield* fileSystem
-          .readFileString(path.join(resolved, entry))
-          .pipe(Effect.orElseSucceed(() => undefined));
-        if (contents === undefined) continue;
-        const chunk = `\n--- ${entry} ---\n${contents}`.slice(0, remaining);
-        chunks.push(chunk);
-        remaining -= chunk.length;
-      }
-      if (chunks.length > 0) replacement = chunks.join("");
-    }
-    if (replacement !== undefined) {
-      result = `${result.slice(0, injection.startIndex)}${replacement}${result.slice(injection.endIndex)}`;
-    }
+  const resources: EffectAcpSchema.ContentBlock[] = [];
+  let text = prompt;
+  for (const injection of extractInjections(prompt, "@{").toReversed()) {
+    if (!injection.content) continue;
+    // Gemini 0.59 treats the file:// suffix as a path without URI decoding.
+    resources.unshift({
+      type: "resource_link",
+      name: injection.content,
+      uri: `file://${path.resolve(cwd, injection.content)}`,
+    });
+    text = `${text.slice(0, injection.startIndex)}@${injection.content}${text.slice(injection.endIndex)}`;
   }
-  return result;
+  return { text, resources };
 });
 
 function preserveShellInjectionsForAgent(prompt: string): string {
@@ -364,15 +310,19 @@ export const expandGeminiCustomCommand = Effect.fn("expandGeminiCustomCommand")(
   cwd: string,
   input: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  { readonly text: string; readonly resources: ReadonlyArray<EffectAcpSchema.ContentBlock> },
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/u.exec(input.trim());
-  if (!match) return input;
+  if (!match) return { text: input, resources: [] };
   const commandName = match[1] ?? "";
   const args = match[2] ?? "";
   const command = (yield* discoverGeminiCustomCommands(config, cwd, environment)).find(
     (candidate) => candidate.name === commandName,
   );
-  if (!command) return input;
+  if (!command) return { text: input, resources: [] };
 
   const usesArgs = command.prompt.includes("{{args}}");
   const platform = yield* HostProcessPlatform;
@@ -381,8 +331,8 @@ export const expandGeminiCustomCommand = Effect.fn("expandGeminiCustomCommand")(
     : args
       ? `${command.prompt}\n\n${input.trim()}`
       : command.prompt;
-  const withFiles = yield* injectGeminiFiles(withArguments, cwd);
-  return preserveShellInjectionsForAgent(withFiles);
+  const linked = yield* linkGeminiFiles(withArguments, cwd);
+  return { ...linked, text: preserveShellInjectionsForAgent(linked.text) };
 });
 
 function escapeRegExp(value: string): string {
@@ -395,6 +345,7 @@ export const expandGeminiSkillMentions = Effect.fn("expandGeminiSkillMentions")(
   input: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
+  if (!/(^|\s)\$\S/u.test(input)) return input;
   const skills = yield* discoverGeminiSkills(config, cwd, environment);
   const requested = skills
     .filter((skill) => skill.enabled)

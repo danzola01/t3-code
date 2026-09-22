@@ -597,6 +597,9 @@ const program = Effect.gen(function* () {
       cancelledSessions.add(cancelledSessionId);
       if (completeFirstPromptOnCancel) {
         yield* Deferred.succeed(nativeCancelRequested, undefined);
+        if (process.env.T3_ACP_AUTO_FINISH_CANCEL === "1") {
+          yield* Deferred.succeed(nativeCancelRelease, undefined);
+        }
         yield* agent.client.sessionUpdate({
           sessionId: cancelledSessionId,
           update: {
@@ -624,6 +627,7 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       promptCount += 1;
+      if (process.env.T3_ACP_EXIT_ON_PROMPT === "1") process.exit(19);
 
       if (completeFirstPromptOnCancel && promptCount === 1) {
         yield* agent.client.sessionUpdate({

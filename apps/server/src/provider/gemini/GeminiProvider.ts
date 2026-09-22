@@ -38,14 +38,14 @@ const GEMINI_PRESENTATION = {
   displayName: "Gemini",
   badgeLabel: "Early Access",
   showInteractionModeToggle: false,
-  requiresNewThreadForModelChange: true,
+  requiresNewThreadForModelChange: false,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
-const GEMINI_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 20_000;
+const GEMINI_ACP_INITIALIZE_TIMEOUT_MS = 20_000;
 
 const GEMINI_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -102,7 +102,7 @@ function geminiModelsFromSettings(
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
 }
 
-function buildGeminiDiscoveredModelsFromSessionModelState(
+export function buildGeminiDiscoveredModelsFromSessionModelState(
   modelState: EffectAcpSchema.SessionModelState | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   if (!modelState || modelState.availableModels.length === 0) {
@@ -126,21 +126,24 @@ function buildGeminiDiscoveredModelsFromSessionModelState(
     .filter((model): model is ServerProviderModel => model !== undefined);
 }
 
-const discoverGeminiModelsViaAcp = (
+const initializeGeminiAcp = (
   geminiSettings: GeminiSettings,
   environment: NodeJS.ProcessEnv = process.env,
 ) =>
   Effect.gen(function* () {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    // Installation readiness must not authenticate, start MCP servers or read
+    // project configuration from whichever directory launched the T3 server.
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-probe-" });
     const acp = yield* makeGeminiAcpRuntime({
       geminiSettings,
       environment,
       childProcessSpawner,
-      cwd: process.cwd(),
+      cwd,
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
-    const started = yield* acp.start();
-    return buildGeminiDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
+    yield* acp.initialize();
   }).pipe(Effect.scoped);
 
 const runGeminiVersionCommand = (
@@ -259,12 +262,12 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
     });
   }
 
-  const discoveryExit = yield* discoverGeminiModelsViaAcp(geminiSettings, environment).pipe(
-    Effect.timeoutOption(GEMINI_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+  const discoveryExit = yield* initializeGeminiAcp(geminiSettings, environment).pipe(
+    Effect.timeoutOption(GEMINI_ACP_INITIALIZE_TIMEOUT_MS),
     Effect.exit,
   );
   if (Exit.isFailure(discoveryExit)) {
-    yield* Effect.logWarning("Gemini ACP model discovery failed", {
+    yield* Effect.logWarning("Gemini ACP initialization failed", {
       errorTag: causeErrorTag(discoveryExit.cause),
     });
     return buildServerProvider({
@@ -278,13 +281,14 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: "Gemini CLI is installed but ACP startup failed. Check server logs for details.",
+        message:
+          "Gemini CLI is installed but ACP initialization failed. Verify the configured executable supports --acp (tested with 0.59.0). Run it from the project's terminal to see its startup diagnostic.",
       },
     });
   }
   if (Option.isNone(discoveryExit.value)) {
     yield* Effect.logWarning(
-      `Gemini ACP model discovery timed out after ${GEMINI_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
+      `Gemini ACP initialization timed out after ${GEMINI_ACP_INITIALIZE_TIMEOUT_MS}ms.`,
     );
     return buildServerProvider({
       presentation: GEMINI_PRESENTATION,
@@ -297,21 +301,16 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: `Gemini CLI is installed but ACP startup timed out after ${GEMINI_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
+        message: `Gemini CLI is installed but ACP initialization timed out after ${GEMINI_ACP_INITIALIZE_TIMEOUT_MS}ms. Run the configured executable with --acp from the project's terminal to inspect startup.`,
       },
     });
   }
-  const discoveredModels = discoveryExit.value.value;
-  const models =
-    discoveredModels.length > 0
-      ? geminiModelsFromSettings(geminiSettings.customModels, discoveredModels)
-      : fallbackModels;
 
   return buildServerProvider({
     presentation: GEMINI_PRESENTATION,
     enabled: geminiSettings.enabled,
     checkedAt,
-    models,
+    models: fallbackModels,
     ...catalog,
     probe: {
       installed: true,

@@ -34,6 +34,7 @@ import {
   enrichGeminiSnapshot,
 } from "./GeminiProvider.ts";
 import { makeGeminiTextGeneration } from "./GeminiTextGeneration.ts";
+import { makeGeminiRuntimeSnapshot } from "./GeminiRuntimeSnapshot.ts";
 const decodeGeminiSettings = Schema.decodeSync(GeminiSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("gemini");
@@ -101,7 +102,10 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies GeminiSettings;
+      const runtimeSnapshot = yield* makeGeminiRuntimeSnapshot(effectiveConfig, processEnv);
       const adapter = yield* makeGeminiAdapter(effectiveConfig, {
+        onAvailableCommands: runtimeSnapshot.onAvailableCommands,
+        onSessionStarted: runtimeSnapshot.onSessionStarted,
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
@@ -152,7 +156,11 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
         displayName,
         accentColor,
         enabled,
-        snapshot,
+        snapshot: runtimeSnapshot.wrap(snapshot),
+        snapshotForCwd: (cwd) =>
+          snapshot.getSnapshot.pipe(
+            Effect.flatMap((current) => runtimeSnapshot.snapshotForCwd(current, cwd)),
+          ),
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

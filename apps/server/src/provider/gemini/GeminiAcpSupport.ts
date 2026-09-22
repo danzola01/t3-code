@@ -83,10 +83,12 @@ export const makeGeminiAcpRuntime = (
     const persistedAuthMethod = yield* readGeminiSelectedAuthMethod(
       input.geminiSettings ?? { homePath: "" },
       input.environment,
+      input.cwd,
     );
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
+        cancelBehavior: "wait-for-prompt",
         retainInitialToolCallContent: true,
         spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),
         authMethodId: (initializeResult) =>

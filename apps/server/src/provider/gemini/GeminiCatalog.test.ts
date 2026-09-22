@@ -161,6 +161,10 @@ it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-catalog-" });
       const home = path.join(root, "gemini-home");
       const workspace = path.join(root, "workspace");
+      yield* writeFile(
+        path.join(home, ".gemini", "trustedFolders.json"),
+        encodeUnknownJson({ [workspace]: "TRUST_FOLDER" }),
+      );
 
       yield* writeFile(
         path.join(home, ".gemini", "commands", "review.toml"),
@@ -222,6 +226,10 @@ it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-expand-" });
       const home = path.join(root, "gemini-home");
       const workspace = path.join(root, "workspace");
+      yield* writeFile(
+        path.join(home, ".gemini", "trustedFolders.json"),
+        encodeUnknownJson({ [workspace]: "TRUST_FOLDER" }),
+      );
       yield* writeFile(path.join(workspace, "notes.txt"), "important context");
       yield* writeFile(
         path.join(home, ".gemini", "commands", "inspect.toml"),
@@ -237,9 +245,17 @@ it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
         workspace,
         "/inspect carefully",
       );
-      assert.include(expanded, "Inspect carefully with important context");
-      assert.include(expanded, "<gemini-custom-command-shell-injection>");
-      assert.include(expanded, "printf '%s' 'carefully'");
+      assert.include(expanded.text, "Inspect carefully with @notes.txt");
+      assert.notInclude(expanded.text, "important context");
+      assert.deepEqual(expanded.resources, [
+        {
+          type: "resource_link",
+          name: "notes.txt",
+          uri: `file://${path.join(workspace, "notes.txt")}`,
+        },
+      ]);
+      assert.include(expanded.text, "<gemini-custom-command-shell-injection>");
+      assert.include(expanded.text, "printf '%s' 'carefully'");
     }),
   );
 
@@ -250,6 +266,10 @@ it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-skill-" });
       const home = path.join(root, "gemini-home");
       const workspace = path.join(root, "workspace");
+      yield* writeFile(
+        path.join(home, ".gemini", "trustedFolders.json"),
+        encodeUnknownJson({ [workspace]: "TRUST_FOLDER" }),
+      );
       yield* writeFile(
         path.join(workspace, ".gemini", "skills", "deploy", "SKILL.md"),
         "---\nname: deploy\ndescription: Deploy this project.\n---\n",

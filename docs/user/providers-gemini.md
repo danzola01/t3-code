@@ -19,6 +19,11 @@ method saved by Gemini CLI, then considers Gemini's authentication environment v
 back to an advertised method. Set the field explicitly when an administrator requires one of
 `oauth-personal`, `gemini-api-key`, `vertex-ai`, or `gateway`.
 
+For Google sign-in, the explicit method is `oauth-personal`. Availability checks verify that the
+CLI supports ACP without signing in or starting a conversation. Authentication and project MCP
+connections are checked when a thread starts; that session also supplies the available models.
+You can change models in an existing thread.
+
 ## Separate Work And Personal Setups
 
 Set **GEMINI_CLI_HOME path** on each provider instance to keep its Gemini settings, credentials,
@@ -42,7 +47,8 @@ explicitly disables that protection for the instance.
 
 T3 Code maps Gemini ACP tool permission requests into the same approval UI used by other providers.
 Full Access automatically selects an allow option when Gemini offers one; other modes continue to
-show the request.
+show the request. Approval choices follow the options Gemini offers. For MCP tools, session
+approval applies to that tool; it does not grant access to every tool on the server or future sessions.
 
 ## MCP
 
@@ -53,14 +59,21 @@ project.
 Gemini MCP activity rows show the server, tool arguments, and a compact result preview. Large MCP
 responses stay summarized when a thread is sent to another client.
 
+Gemini CLI 0.59.0 does not expose the interactive `/mcp` commands over ACP. T3 Code explains this
+when you enter `/mcp list` rather than asking the model to invent a status report. Run
+`gemini mcp list` from the same project directory, home, and environment, or use `/mcp list` in
+interactive Gemini CLI. These commands list MCP servers and tools, not language models. A separate
+terminal session does not include the temporary T3 Code MCP server attached to your thread.
+
 When Gemini publishes a new topic with its built-in `update_topic` tool, T3 Code renames the thread
 to that topic so the sidebar stays aligned with Gemini's current work.
 
 ## Skills And Custom Commands
 
-Gemini skills are discovered from the active Gemini home and from `.gemini/skills` in the project,
-including skills added with `gemini skills link <path>`.
-Disabled skills in Gemini's `settings.json` stay disabled. Selecting a skill from T3 Code asks
+Gemini skills are discovered from `.gemini/skills` and `.agents/skills` in the active Gemini home
+and trusted project, including skills added with `gemini skills link <path>`. Project skills take
+precedence over home skills, and `.agents/skills` takes precedence over `.gemini/skills` at each level.
+Disabled skills in Gemini's user, trusted-project, and system settings stay disabled. Selecting a skill from T3 Code asks
 Gemini to load it through the `activate_skill` tool.
 
 TOML commands under `$GEMINI_CLI_HOME/.gemini/commands` (or `~/.gemini/commands` when no custom
@@ -68,9 +81,20 @@ home is set) and the project's `.gemini/commands` directory work from the compos
 definitions override user definitions, and nested paths use Gemini's colon naming convention, such
 as `/git:commit`.
 
-The command bridge supports `{{args}}`, default raw-invocation appending, and `@{path}` project-file
-injection. A `!{command}` block is routed through Gemini's shell tool so it still uses the thread's
-T3 Code approval policy instead of executing outside the agent boundary.
+The command picker uses commands advertised by the running CLI alongside local TOML commands.
+The command bridge supports `{{args}}`, default raw-invocation appending, and `@{path}` file
+references. Gemini resolves file references using its own ignore rules and access checks.
+A `!{command}` block asks Gemini to run its shell tool under the thread's approval policy; it is
+not guaranteed shell-output substitution before the model runs. Extension-provided skills and
+prompt commands are not yet fully represented in T3's picker.
+
+Sending a follow-up while Gemini is working cancels and drains the current native prompt before
+continuing the same T3 turn. Stop also waits for cancellation before another turn can start.
+
+Plan mode, structured question forms, provider-side conversation rollback, and manual context
+compaction are not currently integrated for Gemini. File checkpoint restoration does not rewind
+Gemini's conversation history. Processed-token totals are recorded per turn; Gemini 0.59.0 does
+not provide a reliable current-context reading through this integration.
 
 ## Workflows
 
