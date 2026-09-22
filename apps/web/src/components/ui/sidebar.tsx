@@ -155,7 +155,10 @@ function SidebarProvider({
     <SidebarContext value={contextValue}>
       <div
         // Inset layouts opt into bg-sidebar through className.
-        className={cn("group/sidebar-wrapper flex min-h-svh w-full", className)}
+        className={cn(
+          "group/sidebar-wrapper flex min-h-svh w-full max-sm:[--workspace-titlebar-control-size:--spacing(8)]",
+          className,
+        )}
         data-sidebar-state={state}
         data-slot="sidebar-wrapper"
         style={
@@ -337,7 +340,7 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       variant="ghost"
       {...props}
     >
-      {isOpen ? <PanelLeftCloseIcon /> : <PanelLeftIcon />}
+      {isOpen ? <PanelLeftCloseIcon className="size-4" /> : <PanelLeftIcon className="size-4" />}
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   );
@@ -555,7 +558,7 @@ function SidebarHeader({ className, ...props }: React.ComponentProps<"div">) {
 function SidebarFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("flex flex-col gap-2 p-2", className)}
+      className={cn("flex flex-col gap-2 px-[var(--sidebar-content-inset)] py-1", className)}
       data-sidebar="footer"
       data-slot="sidebar-footer"
       {...props}
