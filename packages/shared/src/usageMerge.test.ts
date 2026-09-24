@@ -75,6 +75,19 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
+  it("counts Gemini saved responses by day after source de-duplication", () => {
+    const source = { provider: "gemini" as const, hostId: "mac", homePath: "/home/user/.gemini" };
+    const gemini = bucket({ provider: "gemini", model: "gemini-2.5-pro", records: 3 });
+    const merged = mergeUsage(
+      [
+        environment("env-a", summary([gemini], [source])),
+        environment("env-b", summary([gemini], [source])),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+    expect(merged.daily[0]?.geminiResponses).toBe(3);
+  });
+
   it("sums environments that read different transcript directories", () => {
     const merged = mergeUsage(
       [

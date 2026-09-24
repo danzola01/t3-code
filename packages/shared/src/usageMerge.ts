@@ -57,6 +57,8 @@ export interface DailyTotals {
   readonly day: string;
   readonly costUsd: number;
   readonly totalTokens: number;
+  /** Gemini transcript model responses observed in this window. */
+  readonly geminiResponses?: number;
   readonly byProvider: ReadonlyMap<UsageProviderKind, { costUsd: number; totalTokens: number }>;
 }
 
@@ -279,6 +281,7 @@ export function mergeUsage(
     {
       costUsd: number;
       totalTokens: number;
+      geminiResponses: number;
       byProvider: Map<UsageProviderKind, { costUsd: number; totalTokens: number }>;
     }
   >();
@@ -353,10 +356,12 @@ export function mergeUsage(
       const day = dailyAccumulator.get(bucket.day) ?? {
         costUsd: 0,
         totalTokens: 0,
+        geminiResponses: 0,
         byProvider: new Map<UsageProviderKind, { costUsd: number; totalTokens: number }>(),
       };
       day.costUsd += bucket.costUsd;
       day.totalTokens += tokens;
+      if (bucket.provider === "gemini") day.geminiResponses += bucket.records;
       const dayProvider = day.byProvider.get(bucket.provider) ?? { costUsd: 0, totalTokens: 0 };
       dayProvider.costUsd += bucket.costUsd;
       dayProvider.totalTokens += tokens;
@@ -416,6 +421,7 @@ export function mergeUsage(
       day,
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
+      geminiResponses: totals.geminiResponses,
       byProvider: totals.byProvider,
     }))
     .sort((a, b) => a.day.localeCompare(b.day));

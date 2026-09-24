@@ -41,6 +41,9 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
 
+export const GetProjectionThreadActivityInput = Schema.Struct({ activityId: EventId });
+export type GetProjectionThreadActivityInput = typeof GetProjectionThreadActivityInput.Type;
+
 export const GetLatestProjectionThreadTaskActivityInput = Schema.Struct({
   threadId: ThreadId,
   taskId: Schema.String,
@@ -76,6 +79,10 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly listByThreadId: (
     input: ListProjectionThreadActivitiesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  readonly getById: (
+    input: GetProjectionThreadActivityInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
    * List activity rows used to derive pending user-input state.

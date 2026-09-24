@@ -93,8 +93,12 @@ continuing the same T3 turn. Stop also waits for cancellation before another tur
 
 Plan mode, structured question forms, provider-side conversation rollback, and manual context
 compaction are not currently integrated for Gemini. File checkpoint restoration does not rewind
-Gemini's conversation history. Processed-token totals are recorded per turn; Gemini 0.59.0 does
-not provide a reliable current-context reading through this integration.
+Gemini's conversation history. Completed T3 turns show processed tokens and a running thread total
+in the work log. When local model rates are available, they also show an API-equivalent cost
+estimate. This is not an OAuth charge. The Usage page can show an optional daily count of saved
+Gemini model responses. It is an estimate of requests, since failed requests and unsaved retries
+are absent. Gemini 0.59.0 does not provide a reliable current-context reading through this
+integration.
 
 ## Workflows
 

@@ -11,6 +11,7 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  GetProjectionThreadActivityInput,
   ListProjectionThreadActivitiesInput,
   GetLatestProjectionThreadTaskActivityInput,
   ProjectionThreadActivity,
@@ -189,6 +190,17 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const getProjectionThreadActivityRow = SqlSchema.findOneOption({
+    Request: GetProjectionThreadActivityInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ activityId }) => sql`
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM projection_thread_activities
+      WHERE activity_id = ${activityId}
+    `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -217,6 +229,17 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         ),
       ),
       Effect.map((rows) => rows.map(toProjectionThreadActivity)),
+    );
+
+  const getById: ProjectionThreadActivityRepositoryShape["getById"] = (input) =>
+    getProjectionThreadActivityRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.getById:query",
+          "ProjectionThreadActivityRepository.getById:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map(toProjectionThreadActivity)),
     );
 
   const listUserInputLifecycleByThreadId: ProjectionThreadActivityRepositoryShape["listUserInputLifecycleByThreadId"] =
@@ -254,6 +277,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
   return {
     upsert,
     listByThreadId,
+    getById,
     listUserInputLifecycleByThreadId,
     getLatestTaskActivity,
     deleteByThreadId,

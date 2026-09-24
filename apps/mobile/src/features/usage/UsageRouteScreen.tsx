@@ -87,6 +87,7 @@ export function UsageRouteScreen() {
     window: makeWindow(30),
   }));
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
+  const [showGeminiRequests, setShowGeminiRequests] = useState(false);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
@@ -313,6 +314,39 @@ export function UsageRouteScreen() {
                   />
                   <ProviderSection merged={merged} metric={metric} />
                   <TotalsSection merged={merged} isPast24Hours={isPast24Hours} />
+                  {merged.providers.some((provider) => provider.provider === "gemini") ? (
+                    <View className="gap-2 rounded-[24px] border-continuous bg-card p-4">
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => setShowGeminiRequests((value) => !value)}
+                      >
+                        <Text className="text-base font-t3-semibold text-foreground">
+                          Gemini requests · {showGeminiRequests ? "Hide estimate" : "Show estimate"}
+                        </Text>
+                      </Pressable>
+                      {showGeminiRequests ? (
+                        <>
+                          <Text className="text-xs text-foreground-muted">
+                            Saved model responses by day. Failed requests and unsaved retries are
+                            excluded.
+                          </Text>
+                          {merged.daily
+                            .filter((day) => (day.geminiResponses ?? 0) > 0)
+                            .sort((a, b) => b.day.localeCompare(a.day))
+                            .map((day) => (
+                              <View key={day.day} className="flex-row justify-between">
+                                <Text className="text-sm text-foreground">
+                                  {formatDayShort(day.day)}
+                                </Text>
+                                <Text className="text-sm tabular-nums text-foreground">
+                                  {formatCount(day.geminiResponses ?? 0)}
+                                </Text>
+                              </View>
+                            ))}
+                        </>
+                      ) : null}
+                    </View>
+                  ) : null}
                   <ModelsSection merged={merged} />
                 </>
               )}

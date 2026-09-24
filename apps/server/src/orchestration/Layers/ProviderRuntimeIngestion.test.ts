@@ -68,6 +68,7 @@ import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeInge
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { UsageService } from "../../usage/UsageService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
 
@@ -331,6 +332,23 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
+      Layer.provideMerge(
+        Layer.succeed(
+          UsageService,
+          UsageService.of({
+            readSummary: () => Effect.die("unexpected usage summary read"),
+            refreshRates: Effect.die("unexpected rates refresh"),
+            priceGeminiTurn: (models) =>
+              Effect.succeed(
+                Object.values(models).reduce(
+                  (sum, model) =>
+                    sum + model.inputTokens * 0.000001 + model.outputTokens * 0.000002,
+                  0,
+                ),
+              ),
+          }),
+        ),
+      ),
       Layer.provideMerge(
         Layer.effect(
           CheckpointStore.CheckpointStore,
@@ -4514,6 +4532,78 @@ describe("ProviderRuntimeIngestion", () => {
     const thread = await harness.readThreadShell();
     expect(thread.title).toBe("My manual title");
     expect(thread.titleState?.source).toBe("manual");
+  });
+
+  it("records Gemini turn usage and a durable running thread total", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const provider = ProviderDriverKind.make("gemini");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    for (const [index, inputTokens, outputTokens] of [
+      [1, 120, 30],
+      [2, 75, 25],
+    ] as const) {
+      const turnId = asTurnId(`gemini-turn-${index}`);
+      await harness.emitAndDrain([
+        {
+          type: "turn.started",
+          eventId: asEventId(`gemini-start-${index}`),
+          provider,
+          threadId,
+          turnId,
+          createdAt,
+        },
+        {
+          type: "turn.completed",
+          eventId: asEventId(`gemini-complete-${index}`),
+          provider,
+          threadId,
+          turnId,
+          createdAt,
+          payload: {
+            state: "completed",
+            usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
+            modelUsage: { "gemini-2.5-pro": { inputTokens, outputTokens } },
+          },
+        },
+      ]);
+    }
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("gemini-complete-1"),
+        provider,
+        threadId,
+        turnId: asTurnId("gemini-turn-1"),
+        createdAt,
+        payload: {
+          state: "completed",
+          usage: { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+          modelUsage: { "gemini-2.5-pro": { inputTokens: 120, outputTokens: 30 } },
+        },
+      },
+    ]);
+
+    const activities = (await harness.readModel()).threads[0]!.activities.filter(
+      (activity) => activity.kind === "gemini.turn-usage",
+    );
+    expect(activities).toHaveLength(2);
+    expect(activities[0]?.payload).toMatchObject({
+      inputTokens: 120,
+      outputTokens: 30,
+      threadInputTokens: 120,
+      threadOutputTokens: 30,
+    });
+    expect(activities[1]?.payload).toMatchObject({
+      inputTokens: 75,
+      outputTokens: 25,
+      threadInputTokens: 195,
+      threadOutputTokens: 55,
+    });
+    expect((activities[0]!.payload as { costUsd: number }).costUsd).toBeCloseTo(0.00018);
+    expect((activities[1]!.payload as { threadCostUsd: number }).threadCostUsd).toBeCloseTo(
+      0.000305,
+    );
   });
 
   it("projects context window updates into normalized thread activities", async () => {

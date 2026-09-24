@@ -6,6 +6,7 @@ const STORAGE_KEY = "t3code:usage-page-preferences:v1";
 const UsagePagePreferencesSchema = Schema.Struct({
   metric: Schema.Literals(["cost", "tokens", "limits"]),
   windowDays: Schema.Literals([1, 7, 30, 90]),
+  showGeminiRequests: Schema.optional(Schema.Boolean),
 });
 export type UsagePagePreferences = typeof UsagePagePreferencesSchema.Type;
 

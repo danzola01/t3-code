@@ -50,7 +50,12 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { resolveGeminiConfigDir } from "../provider/gemini/GeminiHome.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  priceUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -116,6 +121,12 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Prices ACP turn totals using rates already cached locally, without a network wait. */
+    readonly priceGeminiTurn: (
+      modelUsage: Readonly<
+        Record<string, { readonly inputTokens: number; readonly outputTokens: number }>
+      >,
+    ) => Effect.Effect<number | null>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -143,6 +154,7 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    priceGeminiTurn: () => Effect.succeed(null),
   }),
 );
 
@@ -167,6 +179,8 @@ export const make = Effect.gen(function* () {
   let rates: RateTable = new Map();
   let ratesFetchedAtMs: number | null = null;
   let ratesStatus: UsagePricing["status"] = "unavailable";
+  let savedRatesChecked = false;
+  let backgroundRatesRequested = false;
   // One fetch at a time. A burst of refreshes from several clients waits on
   // the first fetch and then sees a table young enough to skip its own.
   const ratesLock = yield* Semaphore.make(1);
@@ -238,6 +252,60 @@ export const make = Effect.gen(function* () {
     Effect.map(pricing),
     Effect.withSpan("UsageService.refreshRates"),
   );
+
+  const priceGeminiTurn = Effect.fn("UsageService.priceGeminiTurn")(function* (
+    modelUsage: Readonly<
+      Record<string, { readonly inputTokens: number; readonly outputTokens: number }>
+    >,
+  ) {
+    if (rates.size === 0 && !savedRatesChecked) {
+      savedRatesChecked = true;
+      const fromDisk = yield* fileSystem.readFileString(ratesCachePath).pipe(
+        Effect.flatMap((raw) => decodeRatesCache(raw)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      if (fromDisk !== null && rates.size === 0) {
+        rates = parseRateTable(fromDisk.document);
+        if (rates.size > 0) ratesStatus = "cached";
+      }
+    }
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
+    const overrides = createOverrideRateTable(settings?.usagePriceOverrides ?? {});
+    if (rates.size === 0 && !backgroundRatesRequested) {
+      backgroundRatesRequested = true;
+      yield* ensureRates(false).pipe(Effect.forkDetach);
+    }
+    let costUsd = 0;
+    let priced = false;
+    for (const [model, usage] of Object.entries(modelUsage)) {
+      if (
+        !Number.isSafeInteger(usage.inputTokens) ||
+        usage.inputTokens < 0 ||
+        !Number.isSafeInteger(usage.outputTokens) ||
+        usage.outputTokens < 0
+      )
+        return null;
+      const result = priceUsage(
+        rates,
+        model,
+        {
+          uncachedInputTokens: usage.inputTokens,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          outputTokens: usage.outputTokens,
+          reasoningTokens: 0,
+        },
+        null,
+        overrides,
+      );
+      if (result.costSource === "unpriced") return null;
+      priced = true;
+      costUsd += result.costUsd;
+    }
+    return priced ? costUsd : null;
+  });
 
   // A settings failure must not silently discard custom rates or transcript homes.
   const readSettings = settingsService.getSettings.pipe(
@@ -707,7 +775,7 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  return { readSummary, refreshRates, priceGeminiTurn } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

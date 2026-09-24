@@ -177,6 +177,16 @@ describe("UsageService", () => {
       assert.strictEqual(gemini[0]?.totals.reasoningTokens, 10);
       assert.strictEqual(gemini[0]?.costSource, "modelPriced");
       assert.closeTo(gemini[0]?.costUsd ?? 0, 0.00036, 1e-10);
+      const turnCost = yield* service.priceGeminiTurn({
+        "gemini-3.5-flash": { inputTokens: 100, outputTokens: 20 },
+      });
+      assert.closeTo(turnCost ?? 0, 0.00018, 1e-10);
+      assert.strictEqual(
+        yield* service.priceGeminiTurn({
+          "unpriced-model": { inputTokens: 100, outputTokens: 20 },
+        }),
+        null,
+      );
     }),
   );
 

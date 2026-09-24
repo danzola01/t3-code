@@ -31,7 +31,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { formatTokens } from "@t3tools/shared/usageFormat";
+import { formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -55,6 +55,7 @@ import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { UsageService } from "../../usage/UsageService.ts";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
@@ -121,6 +122,8 @@ const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 // as soon as it is done.
 const MIN_ASSISTANT_DELIVERY_INTERVAL_MS = 400;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const formatGeminiCost = (costUsd: number) =>
+  costUsd < 0.01 ? `$${costUsd.toFixed(6)}` : formatUsd(costUsd);
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -1028,6 +1031,7 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const usageService = yield* UsageService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -2595,6 +2599,99 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+
+      if (
+        event.type === "turn.completed" &&
+        event.provider === "gemini" &&
+        eventTurnId &&
+        shouldApplyThreadLifecycle
+      ) {
+        const raw = event.payload.usage;
+        const usage =
+          raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+        const inputTokens = usage?.inputTokens;
+        const outputTokens = usage?.outputTokens;
+        if (
+          typeof inputTokens === "number" &&
+          Number.isSafeInteger(inputTokens) &&
+          inputTokens >= 0 &&
+          typeof outputTokens === "number" &&
+          Number.isSafeInteger(outputTokens) &&
+          outputTokens >= 0
+        ) {
+          const latest = (yield* projectionThreadActivityRepository.listByThreadId({
+            threadId: thread.id,
+            activityKinds: ["gemini.turn-usage"],
+            limit: 1,
+          }))[0];
+          const existing = yield* projectionThreadActivityRepository.getById({
+            activityId: EventId.make(`${event.eventId}:gemini-turn-usage`),
+          });
+          if (latest?.turnId !== eventTurnId && Option.isNone(existing)) {
+            const modelUsage =
+              event.payload.modelUsage !== null && typeof event.payload.modelUsage === "object"
+                ? event.payload.modelUsage
+                : {};
+            const pricedModels: Record<string, { inputTokens: number; outputTokens: number }> = {};
+            for (const [model, value] of Object.entries(modelUsage)) {
+              if (value === null || typeof value !== "object") continue;
+              const counts = value as Record<string, unknown>;
+              if (typeof counts.inputTokens !== "number" || typeof counts.outputTokens !== "number")
+                continue;
+              pricedModels[model] = {
+                inputTokens: counts.inputTokens,
+                outputTokens: counts.outputTokens,
+              };
+            }
+            const costUsd =
+              Object.keys(pricedModels).length === 0
+                ? null
+                : yield* usageService.priceGeminiTurn(pricedModels);
+            const previous =
+              latest?.payload !== null && typeof latest?.payload === "object"
+                ? (latest.payload as Record<string, unknown>)
+                : null;
+            const previousInput = previous?.threadInputTokens;
+            const previousOutput = previous?.threadOutputTokens;
+            const threadInputTokens =
+              (typeof previousInput === "number" && Number.isSafeInteger(previousInput)
+                ? previousInput
+                : 0) + inputTokens;
+            const threadOutputTokens =
+              (typeof previousOutput === "number" && Number.isSafeInteger(previousOutput)
+                ? previousOutput
+                : 0) + outputTokens;
+            const previousCost = previous?.threadCostUsd;
+            const threadCostUsd =
+              costUsd === null || (latest && typeof previousCost !== "number")
+                ? null
+                : (typeof previousCost === "number" ? previousCost : 0) + costUsd;
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: yield* providerCommandId(event, "gemini-turn-usage"),
+              threadId: thread.id,
+              activity: {
+                id: EventId.make(`${event.eventId}:gemini-turn-usage`),
+                createdAt: now,
+                tone: "info",
+                kind: "gemini.turn-usage",
+                summary: `Gemini used ${formatTokens(inputTokens + outputTokens)} tokens${costUsd === null ? "" : ` · ${formatGeminiCost(costUsd)} API estimate`} · thread ${formatTokens(threadInputTokens + threadOutputTokens)}${threadCostUsd === null ? "" : ` · ${formatGeminiCost(threadCostUsd)} API estimate`}`,
+                payload: {
+                  inputTokens,
+                  outputTokens,
+                  threadInputTokens,
+                  threadOutputTokens,
+                  costUsd,
+                  threadCostUsd,
+                  modelUsage: event.payload.modelUsage ?? null,
+                },
+                turnId: eventTurnId,
+              },
+              createdAt: now,
+            });
+          }
+        }
+      }
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
