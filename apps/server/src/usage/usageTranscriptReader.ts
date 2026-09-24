@@ -26,6 +26,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseGeminiLine,
   type CodexScanState,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -100,10 +101,11 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: { readonly fileName?: string; readonly filePrefix?: string },
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
   const fileName = options?.fileName;
+  const filePrefix = options?.filePrefix;
 
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -120,6 +122,8 @@ export async function listTranscriptFiles(
       }
       if (fileName !== undefined) {
         if (entry.name !== fileName) continue;
+      } else if (filePrefix !== undefined) {
+        if (!entry.name.startsWith(filePrefix) || !entry.name.endsWith(".jsonl")) continue;
       } else if (!entry.name.endsWith(".jsonl")) {
         continue;
       }
@@ -233,6 +237,11 @@ export async function readTranscriptRecords(
       if (!mightCarryUsage(line, provider)) return;
       if (provider === "grok") {
         for (const grokRecord of parseGrokLine(line)) out.push(grokRecord);
+        return;
+      }
+      if (provider === "gemini") {
+        const record = parseGeminiLine(line, filePath);
+        if (record !== null) out.push(record);
         return;
       }
       const record = parseClaudeLine(line);

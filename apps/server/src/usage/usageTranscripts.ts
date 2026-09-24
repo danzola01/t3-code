@@ -70,7 +70,49 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "gemini") return line.includes('"tokens"');
   return line.includes('"token_count"');
+}
+
+/** Gemini CLI writes one token snapshot per model response in its chat log. */
+export function parseGeminiLine(line: string, sessionId: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed as Record<string, unknown>;
+  if (record["type"] !== "gemini" || typeof record["model"] !== "string") return null;
+  if (record["model"].trim().length === 0) return null;
+  const timestampMs = parseTimestampMs(record["timestamp"]);
+  if (timestampMs === null || typeof record["tokens"] !== "object" || record["tokens"] === null)
+    return null;
+  const tokens = record["tokens"] as Record<string, unknown>;
+  const input = int(tokens["input"]);
+  const cached = Math.min(input, int(tokens["cached"]));
+  const tool = int(tokens["tool"]);
+  const output = int(tokens["output"]);
+  const thoughts = int(tokens["thoughts"]);
+  // Gemini's `output` excludes thinking tokens; API output pricing includes them.
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: input - cached + tool,
+    cachedInputTokens: cached,
+    cacheCreationTokens: 0,
+    outputTokens: output + thoughts,
+    reasoningTokens: thoughts,
+  };
+  if (totalTokens(totals) === 0) return null;
+  return {
+    provider: "gemini",
+    timestampMs,
+    model: record["model"],
+    sessionId,
+    totals,
+    reportedCostUsd: null,
+    dedupeKey: typeof record["id"] === "string" ? `gemini:${record["id"]}` : null,
+  };
 }
 
 /**

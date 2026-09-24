@@ -102,6 +102,7 @@ const serviceLayers = (input: {
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
+        GEMINI_CLI_HOME: NodePath.join(input.home, "gemini"),
         ...input.environment,
       }),
     ),
@@ -112,6 +113,73 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("includes Gemini chat history from configured homes in API cost estimates", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const workHome = NodePath.join(home, "work-gemini");
+      const personalHome = NodePath.join(home, "personal-gemini");
+      const writeSession = (root: string, id: string, output: number) =>
+        Effect.promise(async () => {
+          const chats = NodePath.join(root, ".gemini", "tmp", "project", "chats");
+          await NodeFSP.mkdir(chats, { recursive: true });
+          await NodeFSP.writeFile(
+            NodePath.join(chats, `session-${id}.jsonl`),
+            [
+              { sessionId: id, startTime: "2026-08-01T10:00:00Z" },
+              {
+                id: `message-${id}`,
+                timestamp: "2026-08-01T10:00:00Z",
+                type: "gemini",
+                model: "gemini-3.5-flash",
+                tokens: { input: 100, output, cached: 0, thoughts: 5, tool: 0 },
+              },
+            ]
+              .map((line) => encodeUnknownJsonString(line))
+              .join("\n") + "\n",
+          );
+        });
+      yield* writeSession(workHome, "work", 10);
+      yield* writeSession(personalHome, "personal", 20);
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-gemini-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("gemini-work")]: {
+                  driver: ProviderDriverKind.make("gemini"),
+                  enabled: false,
+                  environment: [{ name: "GEMINI_CLI_HOME", value: workHome, sensitive: false }],
+                },
+                [ProviderInstanceId.make("gemini-personal")]: {
+                  driver: ProviderDriverKind.make("gemini"),
+                  config: { homePath: personalHome },
+                },
+              },
+            },
+            ratesDocument: {
+              "gemini-3.5-flash": {
+                input_cost_per_token: 0.000001,
+                output_cost_per_token: 0.000004,
+              },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const gemini = summary.buckets.filter((bucket) => bucket.provider === "gemini");
+      assert.strictEqual(gemini.length, 1);
+      assert.strictEqual(gemini[0]?.sessions, 2);
+      assert.strictEqual(gemini[0]?.totals.uncachedInputTokens, 200);
+      assert.strictEqual(gemini[0]?.totals.outputTokens, 40);
+      assert.strictEqual(gemini[0]?.totals.reasoningTokens, 10);
+      assert.strictEqual(gemini[0]?.costSource, "modelPriced");
+      assert.closeTo(gemini[0]?.costUsd ?? 0, 0.00036, 1e-10);
+    }),
+  );
+
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

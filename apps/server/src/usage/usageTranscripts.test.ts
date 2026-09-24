@@ -6,8 +6,41 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseGeminiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
+
+describe("parseGeminiLine", () => {
+  it("prices thinking as output and separates cached input", () => {
+    const record = parseGeminiLine(
+      JSON.stringify({
+        id: "message-1",
+        timestamp: "2026-08-01T10:00:00Z",
+        type: "gemini",
+        model: "gemini-3.5-flash",
+        tokens: { input: 100, output: 10, cached: 25, thoughts: 8, tool: 7, total: 125 },
+      }),
+      "session-1",
+    );
+    expect(record).toMatchObject({
+      provider: "gemini",
+      model: "gemini-3.5-flash",
+      sessionId: "session-1",
+      totals: {
+        uncachedInputTokens: 82,
+        cachedInputTokens: 25,
+        outputTokens: 18,
+        reasoningTokens: 8,
+      },
+      dedupeKey: "gemini:message-1",
+    });
+  });
+
+  it("ignores headers and incomplete response records", () => {
+    expect(parseGeminiLine(JSON.stringify({ sessionId: "session-1" }), "session-1")).toBeNull();
+    expect(parseGeminiLine(JSON.stringify({ type: "gemini", model: "x" }), "session-1")).toBeNull();
+  });
+});
 
 /** Shaped after a real Claude Code assistant record. */
 function claudeLine(overrides: {
