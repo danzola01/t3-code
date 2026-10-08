@@ -8,8 +8,11 @@ desktop when the terminal is not focused. Customize `usage.open` in
 
 **Usage** combines Codex, Claude Code, Grok Build, Gemini CLI, OpenCode, Antigravity, and Cursor history from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
-cost. These estimates are not your subscription bill. For Gemini signed in with Google,
-the cost is an API-equivalent estimate; Google does not bill that OAuth usage by token.
+cost, split by token type and by speed. These estimates are not your subscription bill.
+**Premium** is what Fast and Ultrafast requests cost above standard rates. Cost that cannot be
+split, such as a provider-reported cost for a model without public rates, shows as **Other**.
+Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
+For Gemini signed in with Google, the cost is an API-equivalent estimate; Google does not bill that OAuth usage by token.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals. Gemini CLI removes old session history according to its
@@ -38,7 +41,8 @@ your app understands. Update the app to include newly supported providers.
 
 On web and desktop, use the environment dropdown to filter costs, tokens, and limits. All
 environments are selected by default. The dropdown shows which environments are still scanning;
-results appear as each one responds.
+results appear as each one responds, and figures still updating are dimmed. Cursor shows its last
+saved totals first, then updates them when Cursor's API responds.
 
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
@@ -49,7 +53,8 @@ On web or desktop, open the environment dropdown on **Usage**, then choose **Mod
 edit, or reset a model's estimated price. **Apply to** starts with your current Usage filter;
 choose all environments or select individual destinations. Enter the exact model ID and USD
 rates per million input and output tokens. You can enter any model ID, including models
-without public pricing.
+without public pricing. When a model on **Usage** has no known price, select it under
+**Breakdown** and choose **Set price** to open this table with that model added.
 
 Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for
 tokens that are free. Saved prices replace automatic pricing for all of that environment's
@@ -58,6 +63,11 @@ cells show **Mixed**. Edit rates directly in the table, then choose **Save chang
 edited rows. Untouched cells keep each environment's rate. Select one environment to inspect its
 prices. **Reset to automatic** marks a model's override for removal when you save; you can undo
 it before saving.
+
+To count one model as another, such as a preview model under its released name, enter the target
+model ID under **Map to**. The mapped model no longer appears on **Usage**: its tokens and cost
+move to the target model and use the target's price. Clear **Map to** or reset the row to show
+the model on its own again.
 
 Each destination reports whether the change saved. Offline or unavailable environments are
 marked **Not saved**. Reconnect them and choose **Retry failed saves** to finish the same change
@@ -122,9 +132,9 @@ settings section when you no longer need it.
 ## Subscription usage widget
 
 Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex and
-Claude quotas. Tap it to open **Usage → Limits**. On iOS, use **Edit Widget** to choose Session,
-Weekly, or both for each provider. Reopen T3 to refresh expired readings. The Android widget
-requires Android 12L or later.
+Claude quotas. Tap it to open **Usage → Limits**; on Android this works while T3 is running in
+the background, otherwise open the app from the launcher. On iOS, use **Edit Widget** to choose
+Session, Weekly, or both for each provider. Reopen T3 to refresh expired readings.
 
 ## Keyboard shortcuts
 

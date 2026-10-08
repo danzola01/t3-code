@@ -1,5 +1,5 @@
 import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
-import type * as Acp from "effect-acp/schema";
+import type * as Acp from "effect-acp/compat";
 
 function permissionOption(
   request: Acp.RequestPermissionRequest,

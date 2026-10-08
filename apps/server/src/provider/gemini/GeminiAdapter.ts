@@ -1,71 +1,44 @@
+import type { EventNdjsonLogger } from "../EventNdjsonLogger.ts";
 import {
-  ApprovalRequestId,
   type GeminiSettings,
-  EventId,
-  type ProviderApprovalDecision,
-  type ProviderRuntimeEvent,
-  type ProviderSession,
+  type ProviderInstanceId,
   ProviderDriverKind,
-  ProviderInstanceId,
-  RuntimeRequestId,
-  type ThreadId,
-  TurnId,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as PubSub from "effect/PubSub";
-import * as Ref from "effect/Ref";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
-import * as Stream from "effect/Stream";
-import * as SynchronizedRef from "effect/SynchronizedRef";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { ChildProcessSpawner } from "effect/process";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
-
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { makeProviderFailure } from "../../orchestration-v2/ProviderFailure.ts";
+import type * as EffectAcpSchema from "effect-acp/compat";
+import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
+import { UsageService } from "../../usage/UsageService.ts";
+import { formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { ServerConfig } from "../../config.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import {
-  ProviderAdapterProcessError,
-  ProviderAdapterRequestError,
-  ProviderAdapterSessionNotFoundError,
-  ProviderAdapterValidationError,
-} from "../Errors.ts";
-import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
-import type * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
-import {
-  makeAcpAssistantItemEvent,
-  makeAcpContentDeltaEvent,
-  makeAcpPlanUpdatedEvent,
-  makeAcpRequestOpenedEvent,
-  makeAcpRequestResolvedEvent,
-  makeAcpToolCallEvent,
-} from "../acp/AcpCoreRuntimeEvents.ts";
-import { type AcpToolCallState, parsePermissionRequest } from "../acp/AcpRuntimeModel.ts";
+  AcpProviderCapabilitiesV2,
+  makeAcpAdapterV2,
+} from "../../orchestration-v2/Adapters/AcpAdapterV2.ts";
+import type { AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
+import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import {
   applyGeminiAcpModelSelection,
   currentGeminiModelIdFromSessionSetup,
   makeGeminiAcpRuntime,
   resolveGeminiAcpBaseModelId,
 } from "./GeminiAcpSupport.ts";
-import type { GeminiAdapterShape } from "./GeminiAdapterShape.ts";
 import { geminiApprovalOptions, geminiPermissionOptionId } from "./GeminiPermissions.ts";
 import { expandGeminiCustomCommand, expandGeminiSkillMentions } from "./GeminiCatalog.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
-
-const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 const GeminiPromptQuota = Schema.Struct({
   quota: Schema.Struct({
     token_count: Schema.Struct({
@@ -84,107 +57,6 @@ const GeminiPromptQuota = Schema.Struct({
   }),
 });
 const decodeGeminiPromptQuota = Schema.decodeUnknownOption(GeminiPromptQuota);
-
-const PROVIDER = ProviderDriverKind.make("gemini");
-const GEMINI_RESUME_VERSION = 1 as const;
-const GEMINI_PROMPT_RETRY_ATTEMPTS = 2;
-const GEMINI_PROMPT_RETRY_DELAY = "1 second";
-const GEMINI_CAPACITY_ERROR_DETAIL =
-  "Gemini is temporarily out of capacity. T3 Code retried the request, but the model is still unavailable. Try again shortly or choose another model.";
-
-function isRetryableGeminiCapacityError(error: EffectAcpErrors.AcpError): boolean {
-  const message = error.message.toLowerCase();
-  return message.includes("no capacity available") || message.includes("model is overloaded");
-}
-
-function mapGeminiPromptError(threadId: ThreadId, error: EffectAcpErrors.AcpError) {
-  if (isRetryableGeminiCapacityError(error)) {
-    return new ProviderAdapterRequestError({
-      provider: PROVIDER,
-      method: "session/prompt",
-      detail: GEMINI_CAPACITY_ERROR_DETAIL,
-      cause: error,
-    });
-  }
-  return mapAcpToAdapterError(PROVIDER, threadId, "session/prompt", error);
-}
-
-function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
-  const result = encodeUnknownJsonStringExit(input);
-  return Exit.isSuccess(result) ? result.value : undefined;
-}
-
-export interface GeminiAdapterLiveOptions {
-  readonly environment?: NodeJS.ProcessEnv;
-  readonly nativeEventLogPath?: string;
-  readonly nativeEventLogger?: EventNdjsonLogger;
-  readonly instanceId?: ProviderInstanceId;
-  readonly onAvailableCommands?: (
-    commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
-    cwd: string,
-  ) => Effect.Effect<void>;
-  readonly onSessionStarted?: (
-    started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
-  ) => Effect.Effect<void>;
-}
-
-interface PendingApproval {
-  readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
-}
-
-interface GeminiSessionContext {
-  readonly threadId: ThreadId;
-  readonly cwd: string;
-  readonly acpSessionId: string;
-  session: ProviderSession;
-  readonly scope: Scope.Closeable;
-  readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
-  notificationFiber: Fiber.Fiber<void, never> | undefined;
-  readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
-  turns: Array<{ id: TurnId; items: Array<unknown> }>;
-  lastPlanFingerprint: string | undefined;
-  activeTurnId: TurnId | undefined;
-  /** Turns already interrupted; late prompt RPCs must not resurrect them. */
-  interruptedTurnIds: Set<TurnId>;
-  /** Number of sendTurn prompts currently in flight or being prepared.
-   * >0 means a turn is actively running, so a new sendTurn is a steer that
-   * continues it, and only the last remaining prompt settles the turn. */
-  promptsInFlight: number;
-  currentModelId: string | undefined;
-  availableCommands: ReadonlyArray<EffectAcpSchema.AvailableCommand>;
-  promptUsages: Array<EffectAcpSchema.PromptResponse>;
-  stopped: boolean;
-}
-
-function settlePendingApprovalsAsCancelled(
-  pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
-): Effect.Effect<void> {
-  return Effect.forEach(
-    Array.from(pendingApprovals.values()),
-    (pending) => Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore),
-    { discard: true },
-  );
-}
-
-function appendPromptResultToTurn(
-  ctx: GeminiSessionContext,
-  turnId: TurnId,
-  promptParts: ReadonlyArray<EffectAcpSchema.ContentBlock>,
-  result: EffectAcpSchema.PromptResponse,
-): void {
-  const existingTurnRecord = ctx.turns.find((turn) => turn.id === turnId);
-  ctx.turns = existingTurnRecord
-    ? ctx.turns.map((turn) =>
-        turn.id === turnId
-          ? { ...turn, items: [...turn.items, { prompt: promptParts, result }] }
-          : turn,
-      )
-    : [...ctx.turns, { id: turnId, items: [{ prompt: promptParts, result }] }];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 interface GeminiMcpToolIdentity {
   readonly server: string;
@@ -233,9 +105,9 @@ function geminiMcpArguments(rawInput: unknown, content: unknown): unknown | unde
   return text ? Option.getOrUndefined(decodeUnknownJsonString(text)) : undefined;
 }
 
-function normalizeGeminiMcpToolCall(
+export function normalizeGeminiMcpToolCall(
   toolCall: AcpToolCallState,
-  rememberedArguments: unknown,
+  rememberedArguments?: unknown,
 ): AcpToolCallState {
   const identity = parseGeminiMcpToolTitle(toolCall.title);
   if (!identity) {
@@ -273,36 +145,7 @@ function normalizeGeminiMcpToolCall(
   };
 }
 
-const resolveNotificationTurnId = (ctx: GeminiSessionContext): TurnId | undefined =>
-  ctx.activeTurnId;
-
-const resolveCallbackTurnId = (ctx: GeminiSessionContext): TurnId | undefined => ctx.activeTurnId;
-
-const resolveSessionCallbackTurnId = (
-  sessions: ReadonlyMap<ThreadId, GeminiSessionContext>,
-  threadId: ThreadId,
-): TurnId | undefined => {
-  const ctx = sessions.get(threadId);
-  return ctx ? resolveCallbackTurnId(ctx) : undefined;
-};
-
-function parseGeminiResume(raw: unknown): { sessionId: string } | undefined {
-  if (!isRecord(raw)) return undefined;
-  if (raw.schemaVersion !== GEMINI_RESUME_VERSION) return undefined;
-  if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
-}
-
-function completedStopReasonFromPromptResponse(
-  response: EffectAcpSchema.PromptResponse | undefined,
-): EffectAcpSchema.StopReason | null {
-  if (response === undefined) {
-    return null;
-  }
-  return response.stopReason;
-}
-
-function usageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
+export function usageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
   if (response.usage) return response.usage;
   const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
   if (!meta) return undefined;
@@ -315,7 +158,7 @@ function usageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse)
   } satisfies EffectAcpSchema.Usage;
 }
 
-function modelUsageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
+export function modelUsageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
   const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
   if (!meta) return undefined;
   return Object.fromEntries(
@@ -329,1363 +172,197 @@ function modelUsageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResp
   );
 }
 
-export function geminiPromptSettlementBelongsToContext(input: {
-  readonly liveAcpSessionId: string;
-  readonly expectedAcpSessionId: string;
-  readonly liveActiveTurnId: TurnId | undefined;
-  readonly liveSessionActiveTurnId: TurnId | undefined;
-  readonly turnId: TurnId;
-}): boolean {
-  return (
-    input.liveAcpSessionId === input.expectedAcpSessionId &&
-    (input.liveActiveTurnId === input.turnId || input.liveSessionActiveTurnId === input.turnId)
-  );
-}
-
-export function makeGeminiAdapter(
-  geminiSettings: GeminiSettings,
-  options?: GeminiAdapterLiveOptions,
+export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
+  settings: GeminiSettings,
+  options: {
+    readonly instanceId: ProviderInstanceId;
+    readonly nativeEventLogger?: EventNdjsonLogger | undefined;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly onAvailableCommands?: (
+      commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
+      cwd: string,
+    ) => Effect.Effect<void>;
+    readonly onSessionStarted?: (started: AcpSessionRuntimeStartResult) => Effect.Effect<void>;
+  },
 ) {
-  return Effect.gen(function* () {
-    const adapterScope = yield* Scope.Scope;
-    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("gemini");
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const serverConfig = yield* Effect.service(ServerConfig);
-    const crypto = yield* Crypto.Crypto;
-    const nativeEventLogger =
-      options?.nativeEventLogger ??
-      (options?.nativeEventLogPath !== undefined
-        ? yield* makeEventNdjsonLogger(options.nativeEventLogPath, { stream: "native" })
-        : undefined);
-    const managedNativeEventLogger =
-      options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
-    const makeAcpNativeLoggers = yield* makeAcpNativeLoggerFactory();
-
-    const sessions = new Map<ThreadId, GeminiSessionContext>();
-    const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
-
-    const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const randomUUIDv4 = crypto.randomUUIDv4.pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "crypto/randomUUIDv4",
-            detail: "Failed to generate Gemini runtime identifier.",
-            cause,
-          }),
-      ),
-    );
-    const nextEventId = Effect.map(randomUUIDv4, (id) => EventId.make(id));
-    const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
-    const mapAcpCallbackFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.mapError(
-          (cause) =>
-            new EffectAcpErrors.AcpTransportError({
-              detail: "Failed to process Gemini ACP callback.",
-              cause,
-            }),
-        ),
-      );
-
-    const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
-
-    const getThreadSemaphore = (threadId: string) =>
-      SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
-        const existing: Option.Option<Semaphore.Semaphore> = Option.fromNullishOr(
-          current.get(threadId),
-        );
-        return Option.match(existing, {
-          onNone: () =>
-            Semaphore.make(1).pipe(
-              Effect.map((semaphore) => {
-                const next = new Map(current);
-                next.set(threadId, semaphore);
-                return [semaphore, next] as const;
-              }),
-            ),
-          onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
-        });
-      });
-
-    const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
-      Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
-
-    const settlePromptInFlight = (
-      threadId: ThreadId,
-      turnId: TurnId,
-      expectedAcpSessionId: string,
-      options?: {
-        readonly errorMessage?: string;
-        readonly completedStopReason?: EffectAcpSchema.StopReason | null;
-        readonly emitTurnCompletion?: boolean;
-        /** Interrupt/cancel: drop every outstanding prompt slot and settle once. */
-        readonly settleAllPrompts?: boolean;
-      },
-    ) =>
-      Effect.gen(function* () {
-        const liveCtx = sessions.get(threadId);
-        if (!liveCtx) {
-          return;
-        }
-        const settlementBelongsToLiveContext = geminiPromptSettlementBelongsToContext({
-          liveAcpSessionId: liveCtx.acpSessionId,
-          expectedAcpSessionId,
-          liveActiveTurnId: liveCtx.activeTurnId,
-          liveSessionActiveTurnId: liveCtx.session.activeTurnId,
-          turnId,
-        });
-        if (!settlementBelongsToLiveContext) {
-          // interruptTurn already consumed every prompt slot for this turn. A
-          // late prompt result must neither emit a second terminal event nor
-          // consume a slot belonging to a newer turn on the same ACP session.
-          if (
-            liveCtx.acpSessionId !== expectedAcpSessionId ||
-            liveCtx.interruptedTurnIds.has(turnId)
-          ) {
-            return;
-          }
-          if (options?.emitTurnCompletion !== false) {
-            if (options?.errorMessage !== undefined) {
-              yield* offerRuntimeEvent({
-                type: "turn.completed",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId,
-                turnId,
-                payload: {
-                  state: "failed",
-                  errorMessage: options.errorMessage,
-                },
-              });
-            } else if (options?.completedStopReason !== undefined) {
-              yield* offerRuntimeEvent({
-                type: "turn.completed",
-                ...(yield* makeEventStamp()),
-                provider: PROVIDER,
-                threadId,
-                turnId,
-                payload: {
-                  state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
-                  stopReason: options.completedStopReason ?? null,
-                },
-              });
-            }
-          }
-          return;
-        }
-        let settleTurnId = turnId;
-        if (options?.settleAllPrompts) {
-          liveCtx.promptsInFlight = 0;
-          if (liveCtx.activeTurnId !== turnId && liveCtx.session.activeTurnId !== turnId) {
-            const fallbackTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
-            if (!fallbackTurnId) {
-              if (liveCtx.session.status === "running" || liveCtx.session.status === "connecting") {
-                const updatedAt = yield* nowIso;
-                const { activeTurnId: _activeTurnId, ...readySession } = liveCtx.session;
-                liveCtx.activeTurnId = undefined;
-                liveCtx.session = {
-                  ...readySession,
-                  status: "ready",
-                  updatedAt,
-                };
+  const usageService = yield* UsageService;
+  const crypto = yield* Crypto.Crypto;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const idAllocator = yield* IdAllocatorV2;
+  const serverConfig = yield* ServerConfig;
+  const selfInvocation = yield* resolveSelfInvocation();
+  const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
+  return makeAcpAdapterV2({
+    instanceId: options.instanceId,
+    crypto,
+    fileSystem,
+    idAllocator,
+    serverConfig,
+    selfInvocation,
+    nativeLogging: (threadId) =>
+      makeNativeLogger({
+        provider: ProviderDriverKind.make("gemini"),
+        threadId,
+        nativeEventLogger: options.nativeEventLogger,
+      }),
+    flavor: {
+      driver: ProviderDriverKind.make("gemini"),
+      runtimeHarness: "Gemini",
+      interruptPromptOnCancel: false,
+      promptFailure: (cause) =>
+        makeProviderFailure({
+          cause,
+          ...(Schema.is(EffectAcpErrors.AcpRequestError)(cause)
+            ? {
+                message: /no capacity available|model is overloaded/iu.test(cause.errorMessage)
+                  ? "Gemini is temporarily out of capacity. T3 Code retried the request, but the model is still unavailable. Try again shortly or choose another model."
+                  : cause.errorMessage,
               }
-              return;
-            }
-            settleTurnId = fallbackTurnId;
-          }
-        } else {
-          const remainingPrompts = Math.max(0, liveCtx.promptsInFlight - 1);
-          if (
-            remainingPrompts > 0 ||
-            liveCtx.activeTurnId !== settleTurnId ||
-            liveCtx.session.activeTurnId !== settleTurnId
-          ) {
-            liveCtx.promptsInFlight = remainingPrompts;
-            return;
-          }
-          liveCtx.promptsInFlight = remainingPrompts;
-        }
-        const updatedAt = yield* nowIso;
-        const canEmitTurnCompletion =
-          liveCtx.session.status === "running" || liveCtx.session.status === "connecting";
-        const shouldEmitFailedTurn = options?.errorMessage !== undefined && canEmitTurnCompletion;
-        const shouldEmitCompletedTurn =
-          options?.completedStopReason !== undefined && canEmitTurnCompletion;
-        const { activeTurnId: _activeTurnId, ...readySession } = liveCtx.session;
-        liveCtx.activeTurnId = undefined;
-        liveCtx.session = {
-          ...readySession,
-          status: "ready",
-          updatedAt,
-        };
-        if (options?.emitTurnCompletion === false) {
-          return;
-        }
-        if (shouldEmitFailedTurn) {
-          yield* offerRuntimeEvent({
-            type: "turn.completed",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId,
-            turnId: settleTurnId,
-            payload: {
-              state: "failed",
-              errorMessage: options.errorMessage,
-            },
-          });
-        } else if (shouldEmitCompletedTurn) {
-          yield* offerRuntimeEvent({
-            type: "turn.completed",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId,
-            turnId: settleTurnId,
-            payload: {
-              state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
-              stopReason: options.completedStopReason ?? null,
-            },
-          });
-        }
-      });
-
-    const logNative = (threadId: ThreadId, method: string, payload: unknown) =>
-      Effect.gen(function* () {
-        if (!nativeEventLogger) return;
-        const observedAt = yield* nowIso;
-        yield* nativeEventLogger.write(
-          {
-            observedAt,
-            event: {
-              id: yield* randomUUIDv4,
-              kind: "notification",
-              provider: PROVIDER,
-              createdAt: observedAt,
-              method,
-              threadId,
-              payload,
-            },
-          },
-          threadId,
-        );
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to write native Gemini notification log.", {
-            cause,
-            threadId,
-            method,
-          }),
-        ),
-      );
-
-    const emitPlanUpdate = (
-      ctx: GeminiSessionContext,
-      turnId: TurnId | undefined,
-      stamp: { readonly eventId: EventId; readonly createdAt: string },
-      payload: {
-        readonly explanation?: string | null;
-        readonly plan: ReadonlyArray<{
-          readonly step: string;
-          readonly status: "pending" | "inProgress" | "completed";
-        }>;
-      },
-      rawPayload: unknown,
-      method: string,
-    ) =>
-      Effect.gen(function* () {
-        const fingerprint = `${turnId ?? "no-turn"}:${encodeJsonStringForDiagnostics(payload) ?? "[unserializable payload]"}`;
-        if (ctx.lastPlanFingerprint === fingerprint) {
-          return;
-        }
-        ctx.lastPlanFingerprint = fingerprint;
-        yield* offerRuntimeEvent(
-          makeAcpPlanUpdatedEvent({
-            stamp,
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            turnId,
-            payload,
-            source: "acp.jsonrpc",
-            method,
-            rawPayload,
-          }),
-        );
-      });
-
-    const requireSession = (
-      threadId: ThreadId,
-    ): Effect.Effect<GeminiSessionContext, ProviderAdapterSessionNotFoundError> => {
-      const ctx = sessions.get(threadId);
-      if (!ctx || ctx.stopped) {
-        return Effect.fail(
-          new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
-        );
-      }
-      return Effect.succeed(ctx);
-    };
-
-    const stopSessionInternal = (ctx: GeminiSessionContext) =>
-      Effect.gen(function* () {
-        if (ctx.stopped) return;
-        ctx.stopped = true;
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        if (ctx.notificationFiber) {
-          yield* Fiber.interrupt(ctx.notificationFiber);
-        }
-        yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
-        sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
-          type: "session.exited",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
-      });
-
-    const startSession: GeminiAdapterShape["startSession"] = (input) =>
-      withThreadLock(
-        input.threadId,
+            : {}),
+          class: "provider_error",
+        }),
+      prepareMessage: ({ text, cwd }) =>
         Effect.gen(function* () {
-          if (input.provider !== undefined && input.provider !== PROVIDER) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "startSession",
-              issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
-            });
-          }
-          if (!input.cwd?.trim()) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "startSession",
-              issue: "cwd is required and must be non-empty.",
-            });
-          }
-
-          const cwd = path.resolve(input.cwd.trim());
-          const geminiModelSelection =
-            input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
-          const existing = sessions.get(input.threadId);
-          if (existing && !existing.stopped) {
-            yield* stopSessionInternal(existing);
-          }
-
-          const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
-          const mcpToolArguments = new Map<string, unknown>();
-          const renamedTopicToolCallIds = new Set<string>();
-          const sessionScope = yield* Scope.make("sequential");
-          let sessionScopeTransferred = false;
-          yield* Effect.addFinalizer(() =>
-            sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
-          );
-
-          const resumeSessionId = parseGeminiResume(input.resumeCursor)?.sessionId;
-          const acpNativeLoggers = makeAcpNativeLoggers({
-            nativeEventLogger,
-            provider: PROVIDER,
-            threadId: input.threadId,
-          });
-
-          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-          const acp = yield* makeGeminiAcpRuntime({
-            geminiSettings,
-            ...(options?.environment ? { environment: options.environment } : {}),
-            childProcessSpawner,
+          const expanded = yield* expandGeminiCustomCommand(
+            settings,
             cwd,
-            ...(resumeSessionId ? { resumeSessionId } : {}),
-            clientInfo: { name: "t3-code", version: "0.0.0" },
-            ...(mcpSession
-              ? {
-                  mcpServers: [
-                    {
-                      type: "http" as const,
-                      name: "t3-code",
-                      url: mcpSession.endpoint,
-                      headers: [
-                        {
-                          name: "Authorization",
-                          value: mcpSession.authorizationHeader,
-                        },
-                      ],
-                    },
-                  ],
-                }
-              : {}),
-            ...acpNativeLoggers,
-          }).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
+            text,
+            options.environment,
+          ).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
-            Effect.provideService(Scope.Scope, sessionScope),
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  detail: cause.message,
-                  cause,
-                }),
-            ),
           );
-          const started = yield* Effect.gen(function* () {
-            yield* acp.handleRequestPermission((params) =>
-              mapAcpCallbackFailure(
-                Effect.gen(function* () {
-                  yield* logNative(input.threadId, "session/request_permission", params);
-                  if (parseGeminiMcpToolTitle(params.toolCall.title)) {
-                    const argumentsValue = geminiMcpArguments(
-                      params.toolCall.rawInput,
-                      params.toolCall.content,
-                    );
-                    if (argumentsValue !== undefined) {
-                      mcpToolArguments.set(params.toolCall.toolCallId, argumentsValue);
-                    }
-                  }
-                  if (input.runtimeMode === "full-access") {
-                    const autoApprovedOptionId = geminiPermissionOptionId(params, "accept");
-                    if (autoApprovedOptionId !== undefined) {
-                      return {
-                        outcome: {
-                          outcome: "selected" as const,
-                          optionId: autoApprovedOptionId,
-                        },
-                      };
-                    }
-                  }
-                  const permissionRequest = parsePermissionRequest(params);
-                  const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
-                  const runtimeRequestId = RuntimeRequestId.make(requestId);
-                  const decision = yield* Deferred.make<ProviderApprovalDecision>();
-                  const turnId = resolveSessionCallbackTurnId(sessions, input.threadId);
-                  pendingApprovals.set(requestId, { decision });
-                  yield* offerRuntimeEvent(
-                    makeAcpRequestOpenedEvent({
-                      stamp: yield* makeEventStamp(),
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      turnId,
-                      requestId: runtimeRequestId,
-                      permissionRequest,
-                      approvalOptions: geminiApprovalOptions(params),
-                      detail:
-                        permissionRequest.detail ??
-                        encodeJsonStringForDiagnostics(params)?.slice(0, 2000) ??
-                        "[unserializable params]",
-                      args: params,
-                      source: "acp.jsonrpc",
-                      method: "session/request_permission",
-                      rawPayload: params,
-                    }),
-                  );
-                  const resolved = yield* Deferred.await(decision);
-                  pendingApprovals.delete(requestId);
-                  yield* offerRuntimeEvent(
-                    makeAcpRequestResolvedEvent({
-                      stamp: yield* makeEventStamp(),
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      turnId,
-                      requestId: runtimeRequestId,
-                      permissionRequest,
-                      decision: resolved,
-                    }),
-                  );
-                  if (resolved === "decline" || resolved === "cancel") {
-                    mcpToolArguments.delete(params.toolCall.toolCallId);
-                  }
-                  const selectedOptionId =
-                    resolved === "cancel" ? undefined : geminiPermissionOptionId(params, resolved);
-                  return {
-                    outcome: selectedOptionId
-                      ? {
-                          outcome: "selected" as const,
-                          optionId: selectedOptionId,
-                        }
-                      : ({ outcome: "cancelled" } as const),
-                  };
-                }),
-              ),
-            );
-            return yield* acp.start();
-          }).pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
-            ),
-          );
-
-          const requestedStartModelId = geminiModelSelection?.model
-            ? resolveGeminiAcpBaseModelId(geminiModelSelection.model)
-            : undefined;
-          yield* options?.onSessionStarted?.(started) ?? Effect.void;
-          const boundModelId = yield* applyGeminiAcpModelSelection({
-            runtime: acp,
-            currentModelId: currentGeminiModelIdFromSessionSetup(started.sessionSetupResult),
-            requestedModelId: requestedStartModelId,
-            mapError: (cause) =>
-              mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
-          });
-
-          const now = yield* nowIso;
-          const session: ProviderSession = {
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            status: "ready",
-            runtimeMode: input.runtimeMode,
+          const prepared = yield* expandGeminiSkillMentions(
+            settings,
             cwd,
-            ...(boundModelId ? { model: resolveGeminiAcpBaseModelId(boundModelId) } : {}),
-            threadId: input.threadId,
-            resumeCursor: {
-              schemaVersion: GEMINI_RESUME_VERSION,
-              sessionId: started.sessionId,
-            },
-            createdAt: now,
-            updatedAt: now,
-          };
-
-          const ctx: GeminiSessionContext = {
-            threadId: input.threadId,
-            cwd,
-            acpSessionId: started.sessionId,
-            session,
-            scope: sessionScope,
-            acp,
-            notificationFiber: undefined,
-            pendingApprovals,
-            turns: [],
-            lastPlanFingerprint: undefined,
-            activeTurnId: undefined,
-            interruptedTurnIds: new Set(),
-            promptsInFlight: 0,
-            currentModelId: boundModelId,
-            availableCommands: [],
-            promptUsages: [],
-            stopped: false,
-          };
-
-          const nf = yield* Stream.runDrain(
-            Stream.mapEffect(acp.getEvents(), (event) =>
-              Effect.gen(function* () {
-                if (event._tag === "EventStreamBarrier") {
-                  yield* Deferred.succeed(event.acknowledge, undefined);
-                  return;
-                }
-                if (
-                  event._tag === "PlanUpdated" ||
-                  event._tag === "ToolCallUpdated" ||
-                  event._tag === "ContentDelta"
-                ) {
-                  yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-                }
-
-                if (event._tag === "ConnectionTerminated") {
-                  if (ctx.stopped) return;
-                  ctx.stopped = true;
-                  yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-                  if (ctx.activeTurnId) {
-                    yield* settlePromptInFlight(ctx.threadId, ctx.activeTurnId, ctx.acpSessionId, {
-                      errorMessage: event.error.message,
-                      settleAllPrompts: true,
-                    });
-                  }
-                  if (sessions.get(ctx.threadId) === ctx) sessions.delete(ctx.threadId);
-                  yield* offerRuntimeEvent({
-                    type: "session.exited",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
-                    threadId: ctx.threadId,
-                    payload: { exitKind: "error" },
-                  });
-                  // Close the process scope separately so this consumer can
-                  // acknowledge any prompt-drain barriers already queued.
-                  yield* Effect.gen(function* () {
-                    yield* Scope.close(ctx.scope, Exit.void);
-                    if (ctx.notificationFiber) yield* Fiber.interrupt(ctx.notificationFiber);
-                  }).pipe(Effect.forkIn(adapterScope));
-                  return;
-                }
-                if (event._tag === "AvailableCommandsUpdated") {
-                  ctx.availableCommands = event.availableCommands;
-                  yield* (
-                    options?.onAvailableCommands?.(event.availableCommands, ctx.cwd) ?? Effect.void
-                  );
-                  return;
-                }
-                if (event._tag === "ModeChanged") {
-                  return;
-                }
-
-                const notificationTurnId = resolveNotificationTurnId(ctx);
-                if (
-                  notificationTurnId === undefined ||
-                  ctx.interruptedTurnIds.has(notificationTurnId)
-                ) {
-                  return;
-                }
-                const stamp = yield* makeEventStamp();
-
-                switch (event._tag) {
-                  case "AssistantItemStarted":
-                    yield* offerRuntimeEvent(
-                      makeAcpAssistantItemEvent({
-                        stamp,
-                        provider: PROVIDER,
-                        threadId: ctx.threadId,
-                        turnId: notificationTurnId,
-                        itemId: event.itemId,
-                        lifecycle: "item.started",
-                      }),
-                    );
-                    return;
-                  case "AssistantItemCompleted":
-                    yield* offerRuntimeEvent(
-                      makeAcpAssistantItemEvent({
-                        stamp,
-                        provider: PROVIDER,
-                        threadId: ctx.threadId,
-                        turnId: notificationTurnId,
-                        itemId: event.itemId,
-                        lifecycle: "item.completed",
-                      }),
-                    );
-                    return;
-                  case "PlanUpdated":
-                    yield* emitPlanUpdate(
-                      ctx,
-                      notificationTurnId,
-                      stamp,
-                      event.payload,
-                      event.rawPayload,
-                      "session/update",
-                    );
-                    return;
-                  case "ToolCallUpdated": {
-                    const toolCall = normalizeGeminiMcpToolCall(
-                      event.toolCall,
-                      mcpToolArguments.get(event.toolCall.toolCallId),
-                    );
-                    if (toolCall.status === "completed" || toolCall.status === "failed") {
-                      mcpToolArguments.delete(toolCall.toolCallId);
-                    }
-                    yield* offerRuntimeEvent(
-                      makeAcpToolCallEvent({
-                        stamp,
-                        provider: PROVIDER,
-                        threadId: ctx.threadId,
-                        turnId: notificationTurnId,
-                        toolCall,
-                        rawPayload: event.rawPayload,
-                      }),
-                    );
-                    const topicTitle = geminiThreadTitleFromTopicToolCall(toolCall);
-                    if (
-                      topicTitle !== undefined &&
-                      toolCall.status !== "failed" &&
-                      !renamedTopicToolCallIds.has(toolCall.toolCallId)
-                    ) {
-                      renamedTopicToolCallIds.add(toolCall.toolCallId);
-                      yield* offerRuntimeEvent({
-                        type: "thread.metadata.updated",
-                        ...(yield* makeEventStamp()),
-                        provider: PROVIDER,
-                        threadId: ctx.threadId,
-                        payload: {
-                          name: topicTitle,
-                          replaceExistingTitle: true,
-                          metadata: {
-                            source: "gemini.update_topic",
-                            toolCallId: toolCall.toolCallId,
-                          },
-                        },
-                        raw: {
-                          source: "acp.jsonrpc",
-                          method: "session/update",
-                          payload: event.rawPayload,
-                        },
-                      });
-                    }
-                    return;
-                  }
-                  case "ThoughtDelta":
-                  case "ContentDelta":
-                    yield* offerRuntimeEvent(
-                      makeAcpContentDeltaEvent({
-                        stamp,
-                        provider: PROVIDER,
-                        threadId: ctx.threadId,
-                        turnId: notificationTurnId,
-                        ...(event._tag === "ContentDelta" && event.itemId
-                          ? { itemId: event.itemId }
-                          : {}),
-                        ...(event._tag === "ThoughtDelta" ? { streamKind: "reasoning_text" } : {}),
-                        text: event.text,
-                        rawPayload: event.rawPayload,
-                      }),
-                    );
-                    return;
-                }
-              }),
-            ),
+            expanded.text,
+            options.environment,
           ).pipe(
-            Effect.catch((cause) =>
-              Effect.logError("Failed to process Gemini runtime notification.", { cause }),
-            ),
-            Effect.forkChild,
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
           );
-
-          ctx.notificationFiber = nf;
-          sessions.set(input.threadId, ctx);
-          sessionScopeTransferred = true;
-
-          yield* offerRuntimeEvent({
-            type: "session.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { resume: started.initializeResult },
-          });
-          yield* offerRuntimeEvent({
-            type: "session.state.changed",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { state: "ready", reason: "Gemini ACP session ready" },
-          });
-          yield* offerRuntimeEvent({
-            type: "thread.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { providerThreadId: started.sessionId },
-          });
-
-          return session;
-        }).pipe(Effect.scoped),
-      );
-
-    const sendTurn: GeminiAdapterShape["sendTurn"] = (input) =>
-      Effect.gen(function* () {
-        const prepared = yield* withThreadLock(
-          input.threadId,
-          Effect.gen(function* () {
-            const ctx = yield* requireSession(input.threadId);
-            const rawText = input.input?.trim();
-            const expanded = yield* expandGeminiCustomCommand(
-              geminiSettings,
-              ctx.cwd,
-              rawText ?? "",
-              options?.environment,
-            ).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-            );
-            if (/^\/mcp(?:\s|$)/u.test(rawText ?? "")) yield* ctx.acp.drainEvents;
-            if (
-              /^\/mcp(?:\s|$)/u.test(rawText ?? "") &&
-              expanded.text === rawText &&
-              !ctx.availableCommands.some(
-                (command) =>
-                  rawText === `/${command.name}` || rawText?.startsWith(`/${command.name} `),
-              )
-            ) {
-              return yield* new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "sendTurn",
-                issue:
-                  "This Gemini CLI session does not expose /mcp over ACP. Run `gemini mcp list` in the project's terminal to inspect configured MCP servers, or use /mcp list in interactive Gemini CLI. MCP tools can still be used from T3 Code.",
-              });
-            }
-            const text = yield* expandGeminiSkillMentions(
-              geminiSettings,
-              ctx.cwd,
-              expanded.text,
-              options?.environment,
-            ).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-            );
-            // A steer cancels and drains the previous native prompt before
-            // dispatching its replacement, keeping the same T3 turn.
-            const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
-            const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
-            // Count this prompt immediately so a superseded in-flight prompt
-            // resolving from here on does not settle the turn; decremented on
-            // preparation failure here, and after the prompt below otherwise.
-            ctx.promptsInFlight += 1;
-            // Bind the turn id before cooperative yields so interruptTurn can
-            // settle this prompt even if stop arrives during preparation.
-            ctx.activeTurnId = turnId;
-            ctx.session = {
-              ...ctx.session,
-              status: steeringTurnId === undefined ? "connecting" : "running",
-              activeTurnId: turnId,
-              updatedAt: yield* nowIso,
-            };
-
-            return yield* Effect.gen(function* () {
-              if (steeringTurnId !== undefined) {
-                yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-                yield* ctx.acp.cancel.pipe(
-                  Effect.mapError((error) => mapGeminiPromptError(input.threadId, error)),
-                );
-              } else {
-                ctx.promptUsages = [];
-              }
-              const turnModelSelection =
-                input.modelSelection?.instanceId === boundInstanceId
-                  ? input.modelSelection
-                  : undefined;
-              const requestedTurnModelId = turnModelSelection?.model
-                ? resolveGeminiAcpBaseModelId(turnModelSelection.model)
-                : undefined;
-              const currentModelId = yield* applyGeminiAcpModelSelection({
-                runtime: ctx.acp,
-                currentModelId: ctx.currentModelId,
-                requestedModelId: requestedTurnModelId,
-                mapError: (cause) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
-              });
-
-              const imagePromptParts = yield* Effect.forEach(
-                input.attachments ?? [],
-                (attachment) =>
-                  Effect.gen(function* () {
-                    const attachmentPath = resolveAttachmentPath({
-                      attachmentsDir: serverConfig.attachmentsDir,
-                      attachment,
-                    });
-                    if (!attachmentPath) {
-                      return yield* new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "session/prompt",
-                        detail: `Invalid attachment id '${attachment.id}'.`,
-                      });
-                    }
-                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterRequestError({
-                            provider: PROVIDER,
-                            method: "session/prompt",
-                            detail: cause.message,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return {
-                      type: "image",
-                      data: Buffer.from(bytes).toString("base64"),
-                      mimeType: attachment.mimeType,
-                    } satisfies EffectAcpSchema.ContentBlock;
-                  }),
-              );
-              const promptParts: Array<EffectAcpSchema.ContentBlock> = [
-                ...(text ? [{ type: "text" as const, text }] : []),
-                ...expanded.resources,
-                ...imagePromptParts,
-              ];
-
-              if (promptParts.length === 0) {
-                return yield* new ProviderAdapterValidationError({
-                  provider: PROVIDER,
-                  operation: "sendTurn",
-                  issue: "Turn requires non-empty text or attachments.",
-                });
-              }
-
-              ctx.currentModelId = currentModelId;
-              const displayModel = currentModelId
-                ? resolveGeminiAcpBaseModelId(currentModelId)
-                : undefined;
-              for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
-                yield* Effect.yieldNow;
-              }
-              if (ctx.interruptedTurnIds.has(turnId)) {
-                yield* settlePromptInFlight(input.threadId, turnId, ctx.acpSessionId, {
-                  completedStopReason: "cancelled",
-                  emitTurnCompletion: false,
-                  settleAllPrompts: true,
-                });
-                return yield* new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/prompt",
-                  detail: "Gemini prompt was interrupted during preparation.",
-                });
-              }
-              if (steeringTurnId === undefined) {
-                ctx.lastPlanFingerprint = undefined;
-              }
-              ctx.session = {
-                ...ctx.session,
-                status: "running",
-                activeTurnId: turnId,
-                updatedAt: yield* nowIso,
-                ...(displayModel ? { model: displayModel } : {}),
-              };
-
-              if (steeringTurnId === undefined) {
-                yield* offerRuntimeEvent({
-                  type: "turn.started",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId,
-                  payload: displayModel ? { model: displayModel } : {},
-                });
-              }
-
-              return {
-                acp: ctx.acp,
-                acpSessionId: ctx.acpSessionId,
-                displayModel,
-                promptParts,
-                turnId,
-              };
-            }).pipe(
-              Effect.tapCause(() =>
-                Effect.gen(function* () {
-                  const liveCtx = sessions.get(input.threadId);
-                  if (!liveCtx) {
-                    return;
-                  }
-                  yield* settlePromptInFlight(input.threadId, turnId, liveCtx.acpSessionId, {
-                    errorMessage: "Gemini prompt preparation failed.",
-                    emitTurnCompletion: false,
-                  });
-                }),
-              ),
-            );
-          }),
-        );
-        const promptSettled = yield* Ref.make(false);
-        const promptRpcSucceeded = yield* Ref.make(false);
-        const promptResultRef = yield* Ref.make<EffectAcpSchema.PromptResponse | undefined>(
-          undefined,
-        );
-
-        const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
-
-        return yield* Effect.gen(function* () {
-          const result = yield* prepared.acp
-            .prompt({
-              prompt: prepared.promptParts,
-            })
-            .pipe(
-              Effect.retry({
-                while: isRetryableGeminiCapacityError,
-                times: GEMINI_PROMPT_RETRY_ATTEMPTS,
-                schedule: Schedule.exponential(GEMINI_PROMPT_RETRY_DELAY),
-              }),
-              Effect.tap((promptResult) =>
-                Effect.all([
-                  Ref.set(promptRpcSucceeded, true),
-                  Ref.set(promptResultRef, promptResult),
-                ]),
-              ),
-              Effect.tapError((error) =>
-                Ref.set(
-                  promptFailureMessageRef,
-                  mapGeminiPromptError(input.threadId, error).message,
-                ).pipe(Effect.andThen(prepared.acp.drainEvents)),
-              ),
-              Effect.mapError((error) => mapGeminiPromptError(input.threadId, error)),
-            );
-
-          return yield* withThreadLock(
-            input.threadId,
-            Effect.gen(function* () {
-              const ctx = yield* requireSession(input.threadId);
-              if (ctx.acpSessionId !== prepared.acpSessionId) {
-                yield* settlePromptInFlight(
-                  input.threadId,
-                  prepared.turnId,
-                  prepared.acpSessionId,
-                  {
-                    errorMessage: "Gemini session changed before the turn completed.",
-                    settleAllPrompts: true,
-                  },
-                );
-                yield* Ref.set(promptSettled, true);
-                return yield* new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/prompt",
-                  detail: "Gemini session changed before the turn completed.",
-                });
-              }
-              // Keep prompt settlement atomic with respect to Stop and steering.
-              // interruptTurn marks its target before waiting for this lock, so
-              // cancellation can still win while queued ACP events are drained.
-              for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
-                yield* Effect.yieldNow;
-              }
-              yield* prepared.acp.drainEvents;
-              if (ctx.interruptedTurnIds.has(prepared.turnId)) {
-                yield* Ref.set(promptSettled, true);
-                return {
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  resumeCursor: ctx.session.resumeCursor,
-                };
-              }
-
-              if (
-                ctx.promptsInFlight <= 0 ||
-                ctx.activeTurnId !== prepared.turnId ||
-                ctx.session.activeTurnId !== prepared.turnId
-              ) {
-                yield* Ref.set(promptSettled, true);
-                return {
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  resumeCursor: ctx.session.resumeCursor,
-                };
-              }
-
-              appendPromptResultToTurn(ctx, prepared.turnId, prepared.promptParts, result);
-              ctx.promptUsages.push(result);
-              ctx.session = {
-                ...ctx.session,
-                status: "running",
-                activeTurnId: prepared.turnId,
-                updatedAt: yield* nowIso,
-                ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
-              };
-              const remainingPrompts = Math.max(0, ctx.promptsInFlight - 1);
-              ctx.promptsInFlight = remainingPrompts;
-
-              // Only the last remaining prompt settles the turn. A steer-
-              // superseded prompt resolving while another is in flight or
-              // pending must leave the merged turn running.
-              if (
-                remainingPrompts === 0 &&
-                ctx.activeTurnId === prepared.turnId &&
-                ctx.session.activeTurnId === prepared.turnId
-              ) {
-                if (ctx.interruptedTurnIds.has(prepared.turnId)) {
-                  yield* Ref.set(promptSettled, true);
-                  return {
-                    threadId: input.threadId,
-                    turnId: prepared.turnId,
-                    resumeCursor: ctx.session.resumeCursor,
-                  };
-                }
-                const completedAt = yield* nowIso;
-                const { activeTurnId: _completedTurnId, ...readySession } = ctx.session;
-                ctx.activeTurnId = undefined;
-                ctx.session = {
-                  ...readySession,
-                  status: "ready",
-                  updatedAt: completedAt,
-                  ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
-                };
-                const completedStopReason = completedStopReasonFromPromptResponse(result);
-                // Gemini quota counts are processed tokens across model calls,
-                // not current context occupancy. Keep them on the turn only.
-                const usages = ctx.promptUsages.flatMap((response) => {
-                  const usage = usageFromGeminiPromptResponse(response);
-                  return usage ? [usage] : [];
-                });
-                const usage = usages.length
-                  ? {
-                      inputTokens: usages.reduce((sum, value) => sum + value.inputTokens, 0),
-                      outputTokens: usages.reduce((sum, value) => sum + value.outputTokens, 0),
-                      totalTokens: usages.reduce((sum, value) => sum + value.totalTokens, 0),
-                    }
-                  : undefined;
-                const modelUsage: Record<string, { inputTokens: number; outputTokens: number }> =
-                  {};
-                for (const response of ctx.promptUsages) {
-                  for (const [model, value] of Object.entries(
-                    modelUsageFromGeminiPromptResponse(response) ?? {},
-                  )) {
-                    const previous = modelUsage[model];
-                    modelUsage[model] = {
-                      inputTokens: (previous?.inputTokens ?? 0) + value.inputTokens,
-                      outputTokens: (previous?.outputTokens ?? 0) + value.outputTokens,
-                    };
-                  }
-                }
-                yield* offerRuntimeEvent({
-                  type: "turn.completed",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  payload: {
-                    state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-                    stopReason: completedStopReason,
-                    ...(usage ? { usage } : {}),
-                    ...(Object.keys(modelUsage).length ? { modelUsage } : {}),
-                  },
-                });
-                ctx.interruptedTurnIds.delete(prepared.turnId);
-                yield* Ref.set(promptSettled, true);
-              } else if (remainingPrompts > 0) {
-                yield* Ref.set(promptSettled, true);
-              }
-
-              return {
-                threadId: input.threadId,
-                turnId: prepared.turnId,
-                resumeCursor: ctx.session.resumeCursor,
-              };
-            }),
-          );
-        }).pipe(
-          Effect.ensuring(
-            Effect.gen(function* () {
-              if (yield* Ref.get(promptSettled)) {
-                return;
-              }
-
-              if (yield* Ref.get(promptRpcSucceeded)) {
-                const promptResult = yield* Ref.get(promptResultRef);
-                if (promptResult === undefined) {
-                  return;
-                }
-                yield* withThreadLock(
-                  input.threadId,
-                  Effect.gen(function* () {
-                    const ctx = yield* requireSession(input.threadId);
-                    if (ctx.acpSessionId !== prepared.acpSessionId) {
-                      yield* settlePromptInFlight(
-                        input.threadId,
-                        prepared.turnId,
-                        prepared.acpSessionId,
-                        {
-                          errorMessage: "Gemini session changed before the turn completed.",
-                          settleAllPrompts: true,
-                        },
-                      );
-                      return;
-                    }
-                    if (ctx.interruptedTurnIds.has(prepared.turnId)) {
-                      return;
-                    }
-                    if (
-                      ctx.promptsInFlight <= 0 ||
-                      ctx.activeTurnId !== prepared.turnId ||
-                      ctx.session.activeTurnId !== prepared.turnId
-                    ) {
-                      return;
-                    }
-                    appendPromptResultToTurn(
-                      ctx,
-                      prepared.turnId,
-                      prepared.promptParts,
-                      promptResult,
-                    );
-                    yield* settlePromptInFlight(
-                      input.threadId,
-                      prepared.turnId,
-                      prepared.acpSessionId,
-                      {
-                        completedStopReason: completedStopReasonFromPromptResponse(promptResult),
-                      },
-                    );
-                  }),
-                );
-                return;
-              }
-
-              const errorMessage = yield* Ref.get(promptFailureMessageRef);
-              yield* withThreadLock(
-                input.threadId,
-                settlePromptInFlight(input.threadId, prepared.turnId, prepared.acpSessionId, {
-                  errorMessage: errorMessage ?? "Gemini prompt request failed.",
-                }),
-              );
-            }).pipe(Effect.catch(() => Effect.void)),
-          ),
-        );
-      });
-
-    const interruptTurn: GeminiAdapterShape["interruptTurn"] = (threadId, turnId) =>
-      Effect.gen(function* () {
-        const observed = yield* Effect.sync(() => {
-          const ctx = sessions.get(threadId);
-          if (!ctx || ctx.stopped) {
-            return {
-              _tag: "Proceed" as const,
-              acpSessionId: undefined,
-              interruptedTurnId: turnId,
-            };
-          }
-          const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
-          if (turnId !== undefined && activeTurnId !== undefined && activeTurnId !== turnId) {
-            return { _tag: "Ignore" as const };
-          }
-          const interruptedTurnId = turnId ?? activeTurnId;
-          if (interruptedTurnId !== undefined) {
-            ctx.interruptedTurnIds.add(interruptedTurnId);
-          }
-          return {
-            _tag: "Proceed" as const,
-            acpSessionId: ctx.acpSessionId,
-            interruptedTurnId,
-          };
-        });
-        if (observed._tag === "Ignore") {
-          return;
-        }
-
-        yield* withThreadLock(
-          threadId,
-          Effect.gen(function* () {
-            const ctx = yield* requireSession(threadId);
-            if (observed.acpSessionId !== undefined && ctx.acpSessionId !== observed.acpSessionId) {
-              return;
-            }
-            const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
-            if (turnId !== undefined && activeTurnId !== undefined && activeTurnId !== turnId) {
-              return;
-            }
-            if (
-              observed.interruptedTurnId !== undefined &&
-              activeTurnId !== undefined &&
-              activeTurnId !== observed.interruptedTurnId
-            ) {
-              return;
-            }
-            const interruptedTurnId =
-              observed.interruptedTurnId ?? turnId ?? activeTurnId ?? ctx.session.activeTurnId;
-            yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-            yield* Effect.ignore(
-              ctx.acp.cancel.pipe(
-                Effect.mapError((error) =>
-                  mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
-                ),
-              ),
-            );
-            if (interruptedTurnId) {
-              ctx.interruptedTurnIds.add(interruptedTurnId);
-              yield* settlePromptInFlight(threadId, interruptedTurnId, ctx.acpSessionId, {
-                completedStopReason: "cancelled",
-                settleAllPrompts: true,
-              });
-            } else if (
-              ctx.promptsInFlight > 0 ||
-              ctx.session.status === "running" ||
-              ctx.session.status === "connecting"
-            ) {
-              const updatedAt = yield* nowIso;
-              ctx.promptsInFlight = 0;
-              ctx.activeTurnId = undefined;
-              const { activeTurnId: _activeTurnId, ...readySession } = ctx.session;
-              ctx.session = {
-                ...readySession,
-                status: "ready",
-                updatedAt,
-              };
-            }
-          }),
-        );
-      });
-
-    const respondToRequest: GeminiAdapterShape["respondToRequest"] = (
-      threadId,
-      requestId,
-      decision,
-    ) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        const pending = ctx.pendingApprovals.get(requestId);
-        if (!pending) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/request_permission",
-            detail: `Unknown pending approval request: ${requestId}`,
-          });
-        }
-        yield* Deferred.succeed(pending.decision, decision);
-      });
-
-    const respondToUserInput: GeminiAdapterShape["respondToUserInput"] = (
-      threadId,
-      _requestId,
-      _answers,
-    ) =>
-      Effect.gen(function* () {
-        yield* requireSession(threadId);
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "session/elicitation",
-          detail: "Gemini ACP does not currently expose structured user-input requests.",
-        });
-      });
-
-    const readThread: GeminiAdapterShape["readThread"] = (threadId) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        return { threadId, turns: ctx.turns };
-      });
-
-    const rollbackThread: GeminiAdapterShape["rollbackThread"] = (threadId, numTurns) =>
-      Effect.gen(function* () {
-        yield* requireSession(threadId);
-        if (!Number.isInteger(numTurns) || numTurns < 1) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "rollbackThread",
-            issue: "numTurns must be an integer >= 1.",
-          });
-        }
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "thread/rollback",
-          detail: "Gemini ACP sessions do not support provider-side rollback yet.",
-        });
-      });
-
-    const stopSession: GeminiAdapterShape["stopSession"] = (threadId) =>
-      withThreadLock(
-        threadId,
-        Effect.gen(function* () {
-          const ctx = yield* requireSession(threadId);
-          yield* stopSessionInternal(ctx);
+          return { text: prepared, resources: expanded.resources };
         }),
-      );
-
-    const listSessions: GeminiAdapterShape["listSessions"] = () =>
-      Effect.sync(() => Array.from(sessions.values(), (c) => ({ ...c.session })));
-
-    const hasSession: GeminiAdapterShape["hasSession"] = (threadId) =>
-      Effect.sync(() => {
-        const c = sessions.get(threadId);
-        return c !== undefined && !c.stopped;
-      });
-
-    const stopAll: GeminiAdapterShape["stopAll"] = () =>
-      Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
-
-    yield* Effect.addFinalizer(() =>
-      Effect.ignore(stopAll()).pipe(
-        Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
-        Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
-      ),
-    );
-
-    const streamEvents = Stream.fromPubSub(runtimeEventPubSub);
-
-    return {
-      provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", supportsConversationRollback: false },
-      startSession,
-      sendTurn,
-      interruptTurn,
-      readThread,
-      rollbackThread,
-      respondToRequest,
-      respondToUserInput,
-      stopSession,
-      listSessions,
-      hasSession,
-      stopAll,
-      streamEvents,
-    } satisfies GeminiAdapterShape;
+      promptSettlement: (response, metadata) =>
+        Effect.gen(function* () {
+          const usage = usageFromGeminiPromptResponse(response);
+          if (
+            !usage ||
+            !Number.isSafeInteger(usage.inputTokens) ||
+            !Number.isSafeInteger(usage.outputTokens)
+          )
+            return undefined;
+          const costUsd = yield* usageService.priceGeminiTurn(
+            modelUsageFromGeminiPromptResponse(response) ?? {},
+          );
+          const previous = metadata?.geminiUsage;
+          const totals = {
+            inputTokens: (previous?.inputTokens ?? 0) + usage.inputTokens,
+            outputTokens: (previous?.outputTokens ?? 0) + usage.outputTokens,
+            costUsd:
+              costUsd === null || previous?.costUsd === null
+                ? null
+                : (previous?.costUsd ?? 0) + costUsd,
+          };
+          const cost = (value: number | null) =>
+            value === null
+              ? ""
+              : ` · ${value < 0.01 ? `$${value.toFixed(6)}` : formatUsd(value)} API estimate`;
+          return {
+            usage: {
+              usageStatus: "complete" as const,
+              usageScope: "main_agent" as const,
+              hasSubagents: false,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+            },
+            metadata: { ...metadata, geminiUsage: totals },
+            summary: `Gemini used ${formatTokens(usage.inputTokens + usage.outputTokens)} tokens${cost(costUsd)} · thread ${formatTokens(totals.inputTokens + totals.outputTokens)}${cost(totals.costUsd)}`,
+          };
+        }),
+      capabilities: {
+        ...AcpProviderCapabilitiesV2,
+        tools: { ...AcpProviderCapabilitiesV2.tools, supportsMcpTools: true },
+      },
+      normalizeToolCall: normalizeGeminiMcpToolCall,
+      approvalOptions: geminiApprovalOptions,
+      permissionOptionId: geminiPermissionOptionId,
+      supportsImagePrompts: true,
+      supportsCompaction: true,
+      resolveModelId: (selection) => resolveGeminiAcpBaseModelId(selection.model),
+      applyModelSelection: ({ runtime, startResult, modelSelection }) =>
+        applyGeminiAcpModelSelection({
+          runtime:
+            startResult.initializeResult.protocolVersion === 1
+              ? runtime
+              : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
+          currentModelId: currentGeminiModelIdFromSessionSetup(startResult.sessionSetupResult),
+          requestedModelId: resolveGeminiAcpBaseModelId(modelSelection.model),
+          mapError: (cause) => cause,
+        }),
+      makeRuntime: (input) =>
+        Effect.gen(function* () {
+          const runtime = yield* makeGeminiAcpRuntime({
+            ...input,
+            geminiSettings: settings,
+            environment: { ...options.environment, ...input.processEnvironment },
+            childProcessSpawner,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+          return {
+            ...runtime,
+            start: () =>
+              runtime
+                .start()
+                .pipe(Effect.tap((started) => options.onSessionStarted?.(started) ?? Effect.void)),
+            handleSessionUpdate: (handler) =>
+              runtime.handleSessionUpdate((notification) =>
+                Effect.gen(function* () {
+                  if (notification.update.sessionUpdate === "available_commands_update")
+                    yield* (
+                      options.onAvailableCommands?.(
+                        notification.update.availableCommands,
+                        input.cwd,
+                      ) ?? Effect.void
+                    );
+                  const tool = notification.update;
+                  if (
+                    tool.sessionUpdate === "tool_call" ||
+                    tool.sessionUpdate === "tool_call_update"
+                  ) {
+                    const title = geminiThreadTitleFromTopicToolCall({
+                      toolCallId: tool.toolCallId,
+                      ...(tool.title ? { title: tool.title } : {}),
+                      data: {},
+                    });
+                    if (title)
+                      yield* handler({
+                        sessionId: notification.sessionId,
+                        update: { sessionUpdate: "session_info_update", title },
+                      });
+                  }
+                  yield* handler(notification);
+                }),
+              ),
+            prompt: (request) =>
+              Effect.gen(function* () {
+                const response = yield* runtime.prompt(request).pipe(
+                  Effect.retry({
+                    times: 2,
+                    while: (error) =>
+                      /no capacity available|model is overloaded/iu.test(error.message),
+                    schedule: Schedule.spaced("1 second"),
+                  }),
+                );
+                const usage = usageFromGeminiPromptResponse(response);
+                return { ...response, ...(usage ? { usage } : {}) };
+              }),
+          };
+        }),
+    },
   });
-}
+});

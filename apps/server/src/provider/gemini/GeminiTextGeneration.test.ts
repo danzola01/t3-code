@@ -74,7 +74,7 @@ it.layer(testLayer)("GeminiTextGeneration", (it) => {
         branch: "feature/gemini",
         stagedSummary: "M apps/server/src/provider/gemini/GeminiDriver.ts",
         stagedPatch: "diff --git a/GeminiDriver.ts b/GeminiDriver.ts",
-        modelSelection: createModelSelection(ProviderInstanceId.make("gemini"), "grok-mock-alt"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("gemini"), "composer-2"),
       });
 
       expect(generated).toEqual({

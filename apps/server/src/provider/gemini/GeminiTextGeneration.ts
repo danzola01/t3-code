@@ -5,7 +5,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
 
 import { type GeminiSettings, type ModelSelection } from "@t3tools/contracts";
@@ -92,7 +92,10 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
       const promptResult = yield* Effect.gen(function* () {
         const started = yield* runtime.start();
         yield* applyGeminiAcpModelSelection({
-          runtime,
+          runtime:
+            started.initializeResult.protocolVersion === 1
+              ? runtime
+              : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
           currentModelId: currentGeminiModelIdFromSessionSetup(started.sessionSetupResult),
           requestedModelId: resolvedModel,
           mapError: (cause) =>

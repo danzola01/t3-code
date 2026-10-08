@@ -4,14 +4,14 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { ProviderEventLoggers } from "../ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -26,6 +26,8 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
+import { UsageService } from "../../usage/UsageService.ts";
+import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import { makeGeminiAdapter } from "./GeminiAdapter.ts";
 import { makeGeminiEnvironment } from "./GeminiHome.ts";
 import {
@@ -51,6 +53,8 @@ export type GeminiDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
+  | UsageService
+  | IdAllocatorV2
   | ServerConfig
   | ServerSettingsService;
 
@@ -104,10 +108,10 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
       const effectiveConfig = { ...config, enabled } satisfies GeminiSettings;
       const runtimeSnapshot = yield* makeGeminiRuntimeSnapshot(effectiveConfig, processEnv);
       const adapter = yield* makeGeminiAdapter(effectiveConfig, {
+        nativeEventLogger: eventLoggers.native,
         onAvailableCommands: runtimeSnapshot.onAvailableCommands,
         onSessionStarted: runtimeSnapshot.onSessionStarted,
         environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });
       const textGeneration = yield* makeGeminiTextGeneration(effectiveConfig, processEnv);
@@ -161,7 +165,7 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
           snapshot.getSnapshot.pipe(
             Effect.flatMap((current) => runtimeSnapshot.snapshotForCwd(current, cwd)),
           ),
-        adapter,
+        orchestrationAdapter: adapter,
         textGeneration,
       } satisfies ProviderInstance;
     }),

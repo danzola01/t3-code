@@ -5,9 +5,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
@@ -88,6 +88,7 @@ export const makeGeminiAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
+        authenticateEagerly: true,
         cancelBehavior: "wait-for-prompt",
         retainInitialToolCallContent: true,
         spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),

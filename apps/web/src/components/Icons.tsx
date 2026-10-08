@@ -2,6 +2,13 @@ import React, { type SVGProps, useId } from "react";
 import { cn } from "~/lib/utils";
 export type Icon = React.FC<SVGProps<SVGSVGElement>>;
 
+export const UltrafastIcon: Icon = (props) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <path d="m17 2-10 12h7l-1 8 10-12h-7l1-8Z" opacity="0.4" />
+    <path d="m11 2-10 12h7l-1 8 10-12h-7l1-8Z" />
+  </svg>
+);
+
 export const FinderIcon: Icon = (props) => (
   <svg viewBox="0 0 24 24" fill="none" {...props}>
     <rect x="2" y="2" width="20" height="20" rx="4" fill="#36A9F5" />
@@ -151,70 +158,166 @@ export const GitLabIcon = ({
   </svg>
 );
 
+// Microsoft Azure DevOps mark via selfhst/icons (CC BY 4.0): https://github.com/selfhst/icons/blob/main/svg/azure-devops.svg
 export const AzureDevOpsIcon: Icon = (props) => {
   const id = useId().replaceAll(":", "");
-  const gradientA = `${id}-azure-a`;
-  const gradientB = `${id}-azure-b`;
-  const gradientC = `${id}-azure-c`;
+  const gradientId = `${id}-azure`;
 
   return (
-    <svg {...props} viewBox="0 0 96 96">
+    <svg {...props} viewBox="0 0 512 512">
       <defs>
         <linearGradient
-          id={gradientA}
-          x1="-1032.17"
-          x2="-1059.21"
-          y1="145.31"
-          y2="65.43"
-          gradientTransform="matrix(1 0 0 -1 1075 158)"
+          id={`${gradientId}-a`}
+          x1="58.027"
+          x2="58.027"
+          y1="356.668"
+          y2="100.668"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0" stopColor="#114a8b" />
-          <stop offset="1" stopColor="#0669bc" />
+          <stop offset="0" stopColor="#163697" />
+          <stop offset=".276" stopColor="#2052cb" />
+          <stop offset=".518" stopColor="#2764e7" />
+          <stop offset=".879" stopColor="#367af2" />
         </linearGradient>
         <linearGradient
-          id={gradientB}
-          x1="-1023.73"
-          x2="-1029.98"
-          y1="108.08"
-          y2="105.97"
-          gradientTransform="matrix(1 0 0 -1 1075 158)"
+          id={`${gradientId}-b`}
+          x1="58.027"
+          x2="58.027"
+          y1="351.334"
+          y2="292.668"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0" stopOpacity=".3" />
-          <stop offset=".07" stopOpacity=".2" />
-          <stop offset=".32" stopOpacity=".1" />
-          <stop offset=".62" stopOpacity=".05" />
-          <stop offset="1" stopOpacity="0" />
+          <stop offset="0" stopColor="#102784" />
+          <stop offset="1" stopColor="#2052cb" stopOpacity="0" />
         </linearGradient>
         <linearGradient
-          id={gradientC}
-          x1="-1027.16"
-          x2="-997.48"
-          y1="147.64"
-          y2="68.56"
-          gradientTransform="matrix(1 0 0 -1 1075 158)"
+          id={`${gradientId}-c`}
+          x1="389.98"
+          x2="107.314"
+          y1="57.935"
+          y2="193.935"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
           gradientUnits="userSpaceOnUse"
         >
-          <stop offset="0" stopColor="#3ccbf4" />
-          <stop offset="1" stopColor="#2892df" />
+          <stop offset="0" stopColor="#163697" />
+          <stop offset=".301" stopColor="#2052cb" />
+          <stop offset=".626" stopColor="#2764e7" />
+          <stop offset=".926" stopColor="#367af2" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-d`}
+          x1="391.996"
+          x2="341.385"
+          y1="76.552"
+          y2="78.224"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#102784" />
+          <stop offset="1" stopColor="#2052cb" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-e`}
+          x1="442.24"
+          x2="442.24"
+          y1="54.769"
+          y2="419.38"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset=".043" stopColor="#2052cb" />
+          <stop offset=".489" stopColor="#367af2" />
+          <stop offset=".943" stopColor="#16bbda" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-f`}
+          x1="435.596"
+          x2="425.732"
+          y1="270.413"
+          y2="385.266"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset=".134" stopColor="#16bbda" stopOpacity="0" />
+          <stop offset=".932" stopColor="#6be7a0" stopOpacity=".8629" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-g`}
+          x1="437.081"
+          x2="507.893"
+          y1="204.362"
+          y2="119.081"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stopColor="#2c68e0" stopOpacity="0" />
+          <stop offset=".898" stopColor="#66c0ff" stopOpacity=".5" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-h`}
+          x1="99.399"
+          x2="352.75"
+          y1="279.26"
+          y2="498.676"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset=".005" stopColor="#367af2" />
+          <stop offset=".507" stopColor="#0fafff" />
+          <stop offset="1" stopColor="#26cfe8" />
+        </linearGradient>
+        <linearGradient
+          id={`${gradientId}-i`}
+          x1="184.342"
+          x2="338.581"
+          y1="356.795"
+          y2="480.642"
+          gradientTransform="matrix(1 0 0 -1 0 514)"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset=".443" stopColor="#26cfe8" stopOpacity="0" />
+          <stop offset=".897" stopColor="#6be7a0" stopOpacity=".8629" />
         </linearGradient>
       </defs>
       <path
-        fill={`url(#${gradientA})`}
-        d="M33.34 6.54h26.04l-27.03 80.1a4.15 4.15 0 0 1-3.94 2.81H8.15a4.14 4.14 0 0 1-3.93-5.47L29.4 9.38a4.15 4.15 0 0 1 3.94-2.83z"
+        d="M116.1 73.4c-5.8 5.8-13.7 13.8-13.7 22.6v216.4c0 8.9-3.3 17.3-9 23.4s-13.3 9.2-21.1 8.5l-42.7-3.1c-7.9-.5-15-3.9-20.3-9.3-5.7-5.7-9.3-13.7-9.3-22.6V202.7c0-8.9 3.6-16.9 9.4-22.6l2-1.9z"
+        fill={`url(#${gradientId}-a)`}
       />
       <path
-        fill="#0078d4"
-        d="M71.17 60.26H29.88a1.91 1.91 0 0 0-1.3 3.31l26.53 24.76a4.17 4.17 0 0 0 2.85 1.13h23.38z"
+        d="M116.1 73.4c-5.8 5.8-13.7 13.8-13.7 22.6v216.4c0 8.9-3.3 17.3-9 23.4s-13.3 9.2-21.1 8.5l-42.7-3.1c-7.9-.5-15-3.9-20.3-9.3-5.7-5.7-9.3-13.7-9.3-22.6V202.7c0-8.9 3.6-16.9 9.4-22.6l2-1.9z"
+        fill={`url(#${gradientId}-b)`}
       />
       <path
-        fill={`url(#${gradientB})`}
-        d="M33.34 6.54a4.12 4.12 0 0 0-3.95 2.88L4.25 83.92a4.14 4.14 0 0 0 3.91 5.54h20.79a4.44 4.44 0 0 0 3.4-2.9l5.02-14.78 17.91 16.7a4.24 4.24 0 0 0 2.67.97h23.29L71.02 60.26H41.24L59.47 6.55z"
+        d="m500.5 366-128 106.7c-5.5 4.6-12.7 7.4-20.5 7.4q-2.4 0-4.8-.3l-112.5-16.9v27.8c0 11.7-9.6 21.3-21.3 21.3-7.3 0-13.5-3.6-17.5-9.1l-36.2-51.4-5.4-7.6-36.6-51.9-7-10c-2.6-3.5-3.9-7.8-3.9-12.3 0-6 2.5-11.6 6.8-15.7 3.8-3.7 9.1-5.8 14.5-5.8.4 0 1 .1 1.5.1l105.2 7.5L384 366.5l93.7 6.7c.7.1 1.6.1 2.3.1 7.8 0 14.9-2.7 20.5-7.3"
+        fill={`url(#${gradientId}-c)`}
       />
       <path
-        fill={`url(#${gradientC})`}
-        d="M66.6 9.36a4.14 4.14 0 0 0-3.93-2.82H33.65a4.15 4.15 0 0 1 3.93 2.82l25.18 74.62a4.15 4.15 0 0 1-3.93 5.48h29.02a4.15 4.15 0 0 0 3.93-5.48z"
+        d="m500.5 366-128 106.7c-5.5 4.6-12.7 7.4-20.5 7.4q-2.4 0-4.8-.3l-112.5-16.9v27.8c0 11.7-9.6 21.3-21.3 21.3-7.3 0-13.5-3.6-17.5-9.1l-36.2-51.4-5.4-7.6-36.6-51.9-7-10c-2.6-3.5-3.9-7.8-3.9-12.3 0-6 2.5-11.6 6.8-15.7 3.8-3.7 9.1-5.8 14.5-5.8.4 0 1 .1 1.5.1l105.2 7.5L384 366.5l93.7 6.7c.7.1 1.6.1 2.3.1 7.8 0 14.9-2.7 20.5-7.3"
+        fill={`url(#${gradientId}-d)`}
+      />
+      <path
+        d="M512 170.7v170.7c0 9.9-4.5 18.8-11.5 24.6l-128 106.7c7-5.9 11.5-14.7 11.5-24.6V175.3c0-16.7 13-30.7 29.8-31.9l63.9-4.6c.7-.1 1.6-.1 2.3-.1 7.8 0 14.9 2.8 20.5 7.4 7 5.8 11.5 14.6 11.5 24.6"
+        fill={`url(#${gradientId}-e)`}
+      />
+      <path
+        d="M512 170.7v170.7c0 9.9-4.5 18.8-11.5 24.6l-128 106.7c7-5.9 11.5-14.7 11.5-24.6V175.3c0-16.7 13-30.7 29.8-31.9l63.9-4.6c.7-.1 1.6-.1 2.3-.1 7.8 0 14.9 2.8 20.5 7.4 7 5.8 11.5 14.6 11.5 24.6"
+        fill={`url(#${gradientId}-f)`}
+        fillOpacity=".7"
+      />
+      <path
+        d="M512 170.7v170.7c0 9.9-4.5 18.8-11.5 24.6l-128 106.7c7-5.9 11.5-14.7 11.5-24.6V175.3c0-16.7 13-30.7 29.8-31.9l63.9-4.6c.7-.1 1.6-.1 2.3-.1 7.8 0 14.9 2.8 20.5 7.4 7 5.8 11.5 14.6 11.5 24.6"
+        fill={`url(#${gradientId}-g)`}
+      />
+      <path
+        d="M384 125.5c0 11.2-8.6 20.5-19.8 21.3-.5 0-1.1.1-1.6.1l-127.9 9.2-132.3 9.1-72.7 5.5c-6.9.4-13.2 3.1-18.2 7.4L116.1 73.4c4.7-4.7 10.9-8 17.8-9.1l100.8-15.1V21.3C234.7 9.6 244.3 0 256 0c5.8 0 11.1 2.3 14.9 6.1l33.4 32.6 16.9 16.5 40.3 39.3 16.1 15.8c4.1 3.9 6.4 9.4 6.4 15.2"
+        fill={`url(#${gradientId}-h)`}
+      />
+      <path
+        d="M384 125.5c0 11.2-8.6 20.5-19.8 21.3-.5 0-1.1.1-1.6.1l-127.9 9.2-132.3 9.1-72.7 5.5c-6.9.4-13.2 3.1-18.2 7.4L116.1 73.4c4.7-4.7 10.9-8 17.8-9.1l100.8-15.1V21.3C234.7 9.6 244.3 0 256 0c5.8 0 11.1 2.3 14.9 6.1l33.4 32.6 16.9 16.5 40.3 39.3 16.1 15.8c4.1 3.9 6.4 9.4 6.4 15.2"
+        fill={`url(#${gradientId}-i)`}
+        fillOpacity=".5"
       />
     </svg>
   );
@@ -751,17 +854,6 @@ export const OpenCodeIcon: Icon = (props) => (
   </svg>
 );
 
-export const GithubCopilotIcon: Icon = ({ className, ...props }) => (
-  <svg
-    {...props}
-    preserveAspectRatio="xMidYMid"
-    viewBox="0 0 256 208"
-    className={cn("fill-black dark:fill-white", className)}
-  >
-    <path d="M205.3 31.4c14 14.8 20 35.2 22.5 63.6 6.6 0 12.8 1.5 17 7.2l7.8 10.6c2.2 3 3.4 6.6 3.4 10.4v28.7a12 12 0 0 1-4.8 9.5C215.9 187.2 172.3 208 128 208c-49 0-98.2-28.3-123.2-46.6a12 12 0 0 1-4.8-9.5v-28.7c0-3.8 1.2-7.4 3.4-10.5l7.8-10.5c4.2-5.7 10.4-7.2 17-7.2 2.5-28.4 8.4-48.8 22.5-63.6C77.3 3.2 112.6 0 127.6 0h.4c14.7 0 50.4 2.9 77.3 31.4ZM128 78.7c-3 0-6.5.2-10.3.6a27.1 27.1 0 0 1-6 12.1 45 45 0 0 1-32 13c-6.8 0-13.9-1.5-19.7-5.2-5.5 1.9-10.8 4.5-11.2 11-.5 12.2-.6 24.5-.6 36.8 0 6.1 0 12.3-.2 18.5 0 3.6 2.2 6.9 5.5 8.4C79.9 185.9 105 192 128 192s48-6 74.5-18.1a9.4 9.4 0 0 0 5.5-8.4c.3-18.4 0-37-.8-55.3-.4-6.6-5.7-9.1-11.2-11-5.8 3.7-13 5.1-19.7 5.1a45 45 0 0 1-32-12.9 27.1 27.1 0 0 1-6-12.1c-3.4-.4-6.9-.5-10.3-.6Zm-27 44c5.8 0 10.5 4.6 10.5 10.4v19.2a10.4 10.4 0 0 1-20.8 0V133c0-5.8 4.6-10.4 10.4-10.4Zm53.4 0c5.8 0 10.4 4.6 10.4 10.4v19.2a10.4 10.4 0 0 1-20.8 0V133c0-5.8 4.7-10.4 10.4-10.4Zm-73-94.4c-11.2 1.1-20.6 4.8-25.4 10-10.4 11.3-8.2 40.1-2.2 46.2A31.2 31.2 0 0 0 75 91.7c6.8 0 19.6-1.5 30.1-12.2 4.7-4.5 7.5-15.7 7.2-27-.3-9.1-2.9-16.7-6.7-19.9-4.2-3.6-13.6-5.2-24.2-4.3Zm69 4.3c-3.8 3.2-6.4 10.8-6.7 19.9-.3 11.3 2.5 22.5 7.2 27a41.7 41.7 0 0 0 30 12.2c8.9 0 17-2.9 21.3-7.2 6-6.1 8.2-34.9-2.2-46.3-4.8-5-14.2-8.8-25.4-9.9-10.6-1-20 .7-24.2 4.3ZM128 56c-2.6 0-5.6.2-9 .5.4 1.7.5 3.7.7 5.7 0 1.5 0 3-.2 4.5 3.2-.3 6-.3 8.5-.3 2.6 0 5.3 0 8.5.3-.2-1.6-.2-3-.2-4.5.2-2 .3-4 .7-5.7-3.4-.3-6.4-.5-9-.5Z" />
-  </svg>
-);
-
 export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}
@@ -774,14 +866,17 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
 );
 
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
-  <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
-    <rect width="800" height="800" rx="160" fill="#000" />
+  <svg
+    {...props}
+    viewBox="165.29 165.29 469.43 469.43"
+    fill="none"
+    className={cn("fill-[#0F0F0F] dark:fill-[#F5F5F5]", className)}
+  >
     <path
-      fill="#fff"
       fillRule="evenodd"
       d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
     />
-    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
+    <path d="M517.36 400H634.72V634.72H517.36Z" />
   </svg>
 );
 
@@ -882,3 +977,13 @@ export const ComputerUseAppIcon: Icon = (props) => {
     </svg>
   );
 };
+
+export const MuseIcon: Icon = (props) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150.4828 100" fill="none" {...props}>
+    <path
+      d="M107.9999847,0.0000013c-12.3391113,0-21.984787,9.2935991-30.7164001,21.0993118 C65.2847366,5.821527,55.2499847,0,43.2413788,0C18.7586193,0,0,31.8620682,0,65.5862122 C0,86.6896515,10.2095623,100,27.3103466,100c12.3080502,0,21.1600361-5.8025894,36.8965454-33.3103409 c0,0,6.5597382-11.5841255,11.0725021-19.563858c1.5813522,2.5531845,3.2431107,5.3001404,4.9964676,8.2535095 l7.379303,12.4137955C102.0298843,91.8478851,110.039032,100,124.5517273,100 c16.6595764,0,25.9310303-13.4923325,25.9310303-35.0344849 C150.4827576,29.6551723,131.301178,0.0000013,107.9999847,0.0000013z M52.2068977,59.2413788 c-12.7586212,20-17.1724167,24.4827576-24.2758656,24.4827576c-7.3103428,0-11.6551704-6.4178314-11.6551704-17.8620682 c0-24.4827576,12.2068977-49.5172424,26.7586231-49.5172424c7.880127,0,14.4653816,4.5510426,24.5522308,18.9913158 C58.0087967,50.0272293,52.2068977,59.2413788,52.2068977,59.2413788z M100.3597336,56.7235756L91.5367355,42.00877 c-2.3876724-3.8832092-4.6757278-7.451458-6.8838348-10.7230263 c7.951973-12.273531,14.5113449-18.3891907,22.3126144-18.3891907c16.2069016,0,29.1724243,23.8620682,29.1724243,53.1724091 c0,11.1724167-3.6593475,17.6551743-11.2413864,17.6551743 C117.6294937,83.7241364,114.1578674,78.924736,100.3597336,56.7235756z"
+      fill="currentColor"
+      fillRule="evenodd"
+    />
+  </svg>
+);

@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import type * as Acp from "effect-acp/schema";
+import type * as Acp from "effect-acp/compat";
 import { geminiApprovalOptions, geminiPermissionOptionId } from "./GeminiPermissions.ts";
 
 const request = (

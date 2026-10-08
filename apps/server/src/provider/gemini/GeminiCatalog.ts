@@ -12,7 +12,7 @@ import { parse as parseToml } from "smol-toml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { parse as parseYamlDocument } from "yaml";
 
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { readGeminiDiscoverySettings, resolveGeminiConfigDir } from "./GeminiHome.ts";
 
