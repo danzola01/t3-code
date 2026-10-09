@@ -52,6 +52,8 @@ export const ServerProviderUsageLimits = Schema.Struct({
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   /** Opaque credential identity when the provider does not report an account. */
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
+  /** Opaque account and quota scope identity, when email alone is not enough. */
+  accountId: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
   /** Provider-owned usage settings when quota windows are not available to the client. */
   externalUsage: Schema.optional(

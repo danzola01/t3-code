@@ -112,12 +112,13 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
   return [...links.values()];
 }
 
-/** Prefer the reported email; use an identical credential when no email is available. */
+/** Scoped quotas take precedence over email, then identical credentials are a fallback. */
 function accountKey(
   driver: ServerProvider["driver"],
   email: string | undefined,
   limits?: ServerProviderUsageLimits,
 ): string | null {
+  if (limits?.accountId) return `${driver}:account:${limits.accountId}`;
   const normalizedEmail = email?.trim().toLowerCase();
   if (normalizedEmail) return `${driver}:${normalizedEmail}`;
   return limits?.credentialFingerprint

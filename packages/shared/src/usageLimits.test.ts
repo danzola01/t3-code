@@ -204,6 +204,29 @@ describe("pools", () => {
     expect(accounts[0]?.limits.windows[0]?.usedPercent).toBe(55);
   });
 
+  it("deduplicates Gemini by account and project instead of email alone", () => {
+    const gemini = provider({
+      driver: ProviderDriverKind.make("gemini"),
+      instanceId: ProviderInstanceId.make("gemini"),
+      auth: { status: "authenticated", email: "worker@example.com" },
+      usageLimits: { checkedAt, accountId: "account-project-a", windows: [window] },
+    });
+    const input = new Map([
+      [EnvironmentId.make("env-a"), { ...laptop, serverConfig: { providers: [gemini] } }],
+      [EnvironmentId.make("env-b"), { ...laptop, serverConfig: { providers: [{ ...gemini }] } }],
+    ]);
+    expect(collectLimitAccounts(input)).toHaveLength(1);
+    input.set(EnvironmentId.make("env-b"), {
+      ...laptop,
+      serverConfig: {
+        providers: [
+          { ...gemini, usageLimits: { ...gemini.usageLimits!, accountId: "account-project-b" } },
+        ],
+      },
+    });
+    expect(collectLimitAccounts(input)).toHaveLength(2);
+  });
+
   it("merges OpenCode Go limits from machines with the same API key", () => {
     const go = provider({
       driver: ProviderDriverKind.make("opencode"),

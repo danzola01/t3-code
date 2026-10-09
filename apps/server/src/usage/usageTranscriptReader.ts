@@ -20,6 +20,7 @@ import * as NodePath from "node:path";
 import * as NodeStringDecoder from "node:string_decoder";
 
 import type { UsageProviderKind } from "@t3tools/contracts";
+import * as Predicate from "effect/Predicate";
 
 import { createTranscriptJsonReader } from "../project/AgentSessionJson.ts";
 
@@ -32,6 +33,7 @@ import {
   parseCodexRecord,
   parseGrokLine,
   parseGrokRecord,
+  parseGeminiRecord,
   type CodexScanState,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -62,6 +64,8 @@ export interface TranscriptParsePosition {
   readonly guardHash: number;
   /** Codex reducer state as of `resumeOffset`; `null` for stateless providers. */
   readonly codexState: CodexScanState | null;
+  /** Native Gemini session identity, retained when parsing only appended messages. */
+  readonly geminiSessionId?: string;
 }
 
 export interface TranscriptParseResult {
@@ -93,7 +97,20 @@ type SelectedFields = { readonly [key: string]: true | SelectedFields };
 
 // Keep the fields consumed by usageTranscripts, including reducer state and
 // dedupe/cost metadata. A selected subtree (usage) keeps future token fields.
-const USAGE_FIELDS: Record<"claude" | "codex" | "grok", SelectedFields> = {
+const GEMINI_MESSAGE_FIELDS = {
+  id: true,
+  type: true,
+  timestamp: true,
+  model: true,
+  tokens: true,
+} as const;
+const USAGE_FIELDS: Record<"claude" | "codex" | "grok" | "gemini", SelectedFields> = {
+  gemini: {
+    ...GEMINI_MESSAGE_FIELDS,
+    sessionId: true,
+    messages: GEMINI_MESSAGE_FIELDS,
+    $set: { sessionId: true, messages: GEMINI_MESSAGE_FIELDS },
+  },
   claude: {
     type: true,
     timestamp: true,
@@ -127,11 +144,15 @@ const USAGE_FIELDS: Record<"claude" | "codex" | "grok", SelectedFields> = {
 };
 
 function selectUsageFields(provider: UsageProviderKind) {
-  const fields = USAGE_FIELDS[provider === "codex" || provider === "grok" ? provider : "claude"];
+  const fields =
+    USAGE_FIELDS[
+      provider === "codex" || provider === "grok" || provider === "gemini" ? provider : "claude"
+    ];
   return (path: ReadonlyArray<string | number | null>): boolean => {
     let selected: true | SelectedFields = fields;
     for (const key of path) {
       if (selected === true) return true;
+      if (provider === "gemini" && (typeof key === "number" || key === null)) continue;
       if (typeof key !== "string" || !Object.hasOwn(selected, key)) return false;
       selected = selected[key]!;
     }
@@ -167,11 +188,11 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: { readonly fileName?: string; readonly gemini?: boolean },
 ): Promise<readonly TranscriptFile[]> {
   const fileName = options?.fileName;
   const candidates: string[] = [];
-  const walk = async (dir: string): Promise<void> => {
+  const walk = async (dir: string, inChats = false): Promise<void> => {
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
@@ -180,8 +201,17 @@ export async function listTranscriptFiles(
     }
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(child);
-      else if (fileName !== undefined ? entry.name === fileName : entry.name.endsWith(".jsonl")) {
+      if (entry.isDirectory()) {
+        if (!options?.gemini || inChats || !["logs", "tool-outputs"].includes(entry.name)) {
+          await walk(child, inChats || entry.name === "chats");
+        }
+      } else if (
+        options?.gemini
+          ? inChats && (entry.name.endsWith(".jsonl") || entry.name.endsWith(".json"))
+          : fileName !== undefined
+            ? entry.name === fileName
+            : entry.name.endsWith(".jsonl")
+      ) {
         candidates.push(child);
       }
     }
@@ -206,7 +236,15 @@ export async function listTranscriptFiles(
   await Promise.all(
     Array.from({ length: Math.min(STAT_CONCURRENCY, candidates.length) }, statQueued),
   );
-  return found.filter((file) => file !== undefined);
+  const files = found.filter((file) => file !== undefined);
+  // A resumed legacy JSON session also exists as JSONL. The newest copy supplies usage.
+  return options?.gemini
+    ? files.sort(
+        (a, b) =>
+          b.mtimeMs - a.mtimeMs ||
+          Number(b.path.endsWith(".jsonl")) - Number(a.path.endsWith(".jsonl")),
+      )
+    : files;
 }
 
 /**
@@ -277,21 +315,66 @@ export async function readTranscriptRecords(
   }
 
   try {
+    if (provider === "gemini" && filePath.endsWith(".json")) {
+      const reader = createTranscriptJsonReader(() => {}, selectUsageFields("gemini"), {
+        maxDepth: Infinity,
+      });
+      const decoder = new NodeStringDecoder.StringDecoder("utf8");
+      for await (const chunk of handle.createReadStream({
+        autoClose: false,
+        highWaterMark: 256 * 1024,
+      })) {
+        reader.write(decoder.write(chunk));
+      }
+      reader.write(decoder.end());
+      const records = parseGeminiRecord(reader.finish(), "");
+      return {
+        records,
+        tailRecords: [],
+        position: {
+          resumeOffset: 0,
+          guardLength: 0,
+          guardHash: 0,
+          codexState: null,
+          geminiSessionId: records[0]?.sessionId ?? "",
+        },
+        resumed: false,
+      };
+    }
     let codexState = initialCodexScanState();
+    let geminiSessionId = "";
     let resumed = false;
     let start = 0;
     if (
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (provider !== "codex" || resumeFrom.codexState !== null) &&
+      (provider !== "gemini" || resumeFrom.geminiSessionId !== undefined) &&
       (await guardMatches(handle, resumeFrom))
     ) {
       if (resumeFrom.codexState !== null) codexState = { ...resumeFrom.codexState };
+      geminiSessionId = resumeFrom.geminiSessionId ?? "";
       start = resumeFrom.resumeOffset;
       resumed = true;
     }
 
+    const parseGemini = (value: unknown, out: UsageRecord[]) => {
+      if (Predicate.isObject(value)) {
+        const metadata = Predicate.isObject(value.$set) ? value.$set : value;
+        if (typeof metadata.sessionId === "string") geminiSessionId = metadata.sessionId;
+      }
+      out.push(...parseGeminiRecord(value, geminiSessionId));
+    };
     const parseLine = (line: string, state: CodexScanState, out: UsageRecord[]): void => {
+      if (provider === "gemini") {
+        if (!mightCarryUsage(line, provider)) return;
+        try {
+          parseGemini(JSON.parse(line), out);
+        } catch {
+          /* Active logs can end mid-write. */
+        }
+        return;
+      }
       if (provider === "codex") {
         if (
           !mightCarryUsage(line, provider) &&
@@ -354,7 +437,9 @@ export async function readTranscriptRecords(
       if (streaming) {
         streaming.write(decoder!.end());
         const projected = streaming.finish();
-        if (provider === "grok") {
+        if (provider === "gemini") {
+          parseGemini(projected, out);
+        } else if (provider === "grok") {
           out.push(...parseGrokRecord(projected));
         } else {
           const record =
@@ -403,6 +488,7 @@ export async function readTranscriptRecords(
     }
 
     const tailRecords: UsageRecord[] = [];
+    const completedGeminiSessionId = geminiSessionId;
     finish({ ...codexState }, tailRecords);
 
     const guardLength = Math.min(GUARD_LENGTH, resumeOffset);
@@ -421,6 +507,7 @@ export async function readTranscriptRecords(
         guardLength,
         guardHash,
         codexState: provider === "codex" ? codexState : null,
+        ...(provider === "gemini" ? { geminiSessionId: completedGeminiSessionId } : {}),
       },
       resumed,
     };

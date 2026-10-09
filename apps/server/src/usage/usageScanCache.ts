@@ -94,6 +94,7 @@ interface SerializedFile {
   readonly gh: number;
   /** Codex reducer state at `o`; `null` for stateless providers. */
   readonly cs: CodexScanState | null;
+  readonly gs?: string;
 }
 
 interface SerializedCache {
@@ -148,6 +149,7 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
     gl: entry.position.guardLength,
     gh: entry.position.guardHash,
     cs: entry.position.codexState,
+    ...(entry.position.geminiSessionId !== undefined ? { gs: entry.position.geminiSessionId } : {}),
   };
 }
 
@@ -300,7 +302,10 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok") continue;
+    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok" && entry.p !== "gemini")
+      continue;
+    // Old fork caches predate update-aware Gemini parsing. Keep other providers warm.
+    if (entry.p === "gemini" && typeof entry.gs !== "string") continue;
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
     // Position fields feed byte offsets and a Buffer allocation in the reader,
     // so anything outside their real ranges must reject the entry: a bogus
@@ -340,7 +345,13 @@ export function decodeScanCache(document: unknown): ScanCache {
       tailRecords,
       position: legacyCodex
         ? { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null }
-        : { resumeOffset: entry.o, guardLength: entry.gl, guardHash: entry.gh, codexState },
+        : {
+            resumeOffset: entry.o,
+            guardLength: entry.gl,
+            guardHash: entry.gh,
+            codexState,
+            ...(entry.p === "gemini" ? { geminiSessionId: entry.gs } : {}),
+          },
     });
   }
 
@@ -394,7 +405,8 @@ export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): num
 /**
  * Within-file de-duplication, applied before an entry is cached.
  *
- * Callers stitching an incremental parse together pass one `seen` set across
+ * Gemini snapshots use the last occurrence of each message ID. Other providers
+ * retain their first occurrence. Callers stitching an incremental parse pass one `seen` set across
  * the line and tail record batches so the whole file stays deduplicated as a
  * unit; the set is mutated in place.
  */
@@ -403,12 +415,14 @@ export function dedupeWithinFile(
   seen: Set<string> = new Set(),
 ): readonly UsageRecord[] {
   const kept: UsageRecord[] = [];
-  for (const record of records) {
+  const latestWins = records[0]?.provider === "gemini";
+  for (let index = 0; index < records.length; index++) {
+    const record = records[latestWins ? records.length - 1 - index : index]!;
     if (record.dedupeKey !== null) {
       if (seen.has(record.dedupeKey)) continue;
       seen.add(record.dedupeKey);
     }
     kept.push(record);
   }
-  return kept;
+  return latestWins ? kept.toReversed() : kept;
 }

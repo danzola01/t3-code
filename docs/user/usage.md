@@ -6,7 +6,7 @@ desktop when the terminal is not focused. Customize `usage.open` in
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, Grok Build, OpenCode, Antigravity, and Cursor history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, OpenCode, Antigravity, Gemini CLI, and Cursor history from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost, split by token type and by speed. These estimates are not your subscription bill.
 **Premium** is what Fast and Ultrafast requests cost above standard rates. Cost that cannot be
@@ -33,6 +33,11 @@ the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HO
 variable. Use absolute paths or `~/` paths in the account's environment settings; relative
 environment paths depend on each project's working directory and cannot be reliably discovered
 by Usage. Accounts sharing a history directory count once.
+
+Gemini reads saved CLI sessions from each configured instance's home, including activity outside
+T3 Code and subagent sessions. Cost includes reported thinking tokens and cached input; model
+responses without token metadata are missing from the totals. These figures estimate API token
+cost, not your Code Assist subscription bill, grounding charges, or cache storage charges.
 
 When your app and server support different providers, usage totals may cover only the providers
 your app understands. Update the app to include newly supported providers.
@@ -114,6 +119,13 @@ or endpoint configurations do not report subscription limits.
 
 API-key accounts may not report subscription limits. This also applies to Claude connections
 using a proxy through `ANTHROPIC_AUTH_TOKEN`.
+
+Gemini Google sign-in accounts report their remaining Code Assist quotas per model and reset times.
+These quotas can include Code Assist agent-mode activity outside Gemini CLI, so they cover more
+than the local token history. The same Google account and Cloud project count once across environments.
+For a company account, set `GOOGLE_CLOUD_PROJECT` in the instance's environment if Gemini cannot
+discover the project. API-key, Vertex AI, encrypted credential storage, and custom Code Assist
+endpoints do not currently support quota reporting.
 
 ## Connect a CLIProxyAPI hub
 

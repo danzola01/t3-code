@@ -36,6 +36,7 @@ import {
 } from "./GeminiProvider.ts";
 import { makeGeminiTextGeneration } from "./GeminiTextGeneration.ts";
 import { makeGeminiRuntimeSnapshot } from "./GeminiRuntimeSnapshot.ts";
+import { makeGeminiUsageReader } from "./GeminiUsageLimits.ts";
 const decodeGeminiSettings = Schema.decodeSync(GeminiSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("gemini");
@@ -113,8 +114,22 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv> = {
         instanceId,
       });
       const textGeneration = yield* makeGeminiTextGeneration(effectiveConfig, processEnv);
+      const usageReader = yield* makeGeminiUsageReader(effectiveConfig, processEnv);
 
       const checkProvider = checkGeminiProviderStatus(effectiveConfig, processEnv).pipe(
+        Effect.flatMap((current) =>
+          effectiveConfig.enabled && current.installed && current.status === "ready"
+            ? usageReader.read.pipe(
+                Effect.map(({ email, plan, usageLimits }) => ({
+                  ...current,
+                  auth: email
+                    ? { status: "authenticated" as const, email, ...(plan ? { label: plan } : {}) }
+                    : current.auth,
+                  usageLimits,
+                })),
+              )
+            : Effect.succeed(current),
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(FileSystem.FileSystem, fileSystem),

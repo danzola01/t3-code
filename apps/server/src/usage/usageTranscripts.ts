@@ -7,6 +7,7 @@
  * @module usageTranscripts
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
+import * as Predicate from "effect/Predicate";
 
 /**
  * Billing speed of a request. Faster speeds bill at a model-specific premium.
@@ -74,7 +75,53 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "gemini") return line.includes('"tokens"') || line.includes('"sessionId"');
   return line.includes('"token_count"');
+}
+
+/** Native Gemini message snapshots; repeated IDs replace earlier token snapshots. */
+export function parseGeminiRecord(value: unknown, sessionId: string): readonly UsageRecord[] {
+  if (!Predicate.isObject(value)) return [];
+  const nativeSession = typeof value.sessionId === "string" ? value.sessionId : sessionId;
+  if (Array.isArray(value.messages)) {
+    return value.messages.flatMap((message) => parseGeminiRecord(message, nativeSession));
+  }
+  if (Predicate.isObject(value.$set) && Array.isArray(value.$set.messages)) {
+    return value.$set.messages.flatMap((message) => parseGeminiRecord(message, nativeSession));
+  }
+  if (
+    value.type !== "gemini" ||
+    typeof value.model !== "string" ||
+    !value.model.trim() ||
+    typeof value.id !== "string" ||
+    !Predicate.isObject(value.tokens)
+  )
+    return [];
+  const timestampMs = parseTimestampMs(value.timestamp);
+  if (timestampMs === null) return [];
+  const input = int(value.tokens.input);
+  const cached = Math.min(input, int(value.tokens.cached));
+  const thoughts = int(value.tokens.thoughts);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: input - cached + int(value.tokens.tool),
+    cachedInputTokens: cached,
+    cacheCreationTokens: 0,
+    outputTokens: int(value.tokens.output) + thoughts,
+    reasoningTokens: thoughts,
+  };
+  if (totalTokens(totals) === 0) return [];
+  return [
+    {
+      provider: "gemini",
+      timestampMs,
+      model: value.model.trim(),
+      sessionId: nativeSession,
+      totals,
+      reportedCostUsd: null,
+      speed: "standard",
+      dedupeKey: `gemini:${value.id}`,
+    },
+  ];
 }
 
 /**

@@ -23,6 +23,7 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
+  GeminiSettings,
   type ProviderInstanceConfig,
   ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
@@ -59,6 +60,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
+import { resolveGeminiConfigDir } from "../provider/gemini/GeminiHome.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { makeAntigravityUsageCache, readAntigravityUsage } from "./antigravityUsageReader.ts";
 import {
@@ -121,6 +123,7 @@ const TRANSCRIPT_READ_CONCURRENCY = 4;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+const decodeGeminiSettings = Schema.decodeOption(GeminiSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -350,7 +353,7 @@ export const make = Effect.gen(function* () {
       fileName?: string;
     }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "gemini"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<
@@ -358,7 +361,7 @@ export const make = Effect.gen(function* () {
       > = Object.entries(settings.providerInstances)
         .filter(([, instance]) => instance.driver === driver)
         .map(([id, instance]) => ({ ...instance, instanceId: ProviderInstanceId.make(id) }));
-      if (!Object.hasOwn(settings.providerInstances, driver)) {
+      if (driver !== "gemini" && !Object.hasOwn(settings.providerInstances, driver)) {
         instances.push({
           config: settings.providers[driver],
           instanceId: ProviderInstanceId.make(driver),
@@ -389,12 +392,19 @@ export const make = Effect.gen(function* () {
           home = configured
             ? expandHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
+        } else if (driver === "gemini") {
+          const decoded = decodeGeminiSettings(instance.config ?? {});
+          if (Option.isNone(decoded)) continue;
+          home = path.join(yield* resolveGeminiConfigDir(decoded.value, environment), "tmp");
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
+        const directory = path.resolve(
+          home,
+          provider === "claude" ? "projects" : provider === "gemini" ? "" : "sessions",
+        );
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,
@@ -557,7 +567,7 @@ export const make = Effect.gen(function* () {
           records:
             cached.tailRecords.length === 0
               ? cached.records
-              : [...cached.records, ...cached.tailRecords],
+              : dedupeWithinFile([...cached.records, ...cached.tailRecords]),
         };
       }
 
@@ -575,7 +585,10 @@ export const make = Effect.gen(function* () {
       // (size, mtime) would silently drop the file's usage until it changes.
       if (parsed === null)
         return {
-          records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
+          records:
+            cached?.provider === provider
+              ? dedupeWithinFile([...cached.records, ...cached.tailRecords])
+              : [],
         };
 
       // Stored already de-duplicated within the file, which is 99% of all
@@ -585,10 +598,14 @@ export const make = Effect.gen(function* () {
       const base = parsed.resumed && cached !== undefined ? cached.records : [];
       const seen = new Set<string>();
       const records = dedupeWithinFile([...base, ...parsed.records], seen);
-      const tailRecords = dedupeWithinFile(parsed.tailRecords, seen);
+      const tailRecords = dedupeWithinFile(
+        parsed.tailRecords,
+        provider === "gemini" ? undefined : seen,
+      );
 
       return {
-        records: tailRecords.length === 0 ? records : [...records, ...tailRecords],
+        records:
+          tailRecords.length === 0 ? records : dedupeWithinFile([...records, ...tailRecords]),
         update: {
           entry: { size, mtimeMs, provider, records, tailRecords, position: parsed.position },
           replaces: cached,
@@ -628,7 +645,15 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
     if (!exists) return { provider, dir, volumeId, files: null } satisfies ScannedDir;
     const files = yield* Effect.promise(() =>
-      listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
+      listTranscriptFiles(
+        dir,
+        windowStartMs,
+        provider === "gemini"
+          ? { gemini: true }
+          : fileName === undefined
+            ? undefined
+            : { fileName },
+      ),
     );
     // A cold parse waits on disk reads, so a few files in flight read
     // close to twice as fast. Results keep walk order.
@@ -1099,7 +1124,10 @@ export const make = Effect.gen(function* () {
           !isWithinDirectory(filePath, dir)
         )
           continue;
-        retainedFiles.push({ path: filePath, records: [...entry.records, ...entry.tailRecords] });
+        retainedFiles.push({
+          path: filePath,
+          records: dedupeWithinFile([...entry.records, ...entry.tailRecords]),
+        });
       }
       return retainedFiles;
     });

@@ -93,6 +93,7 @@ export function applyUsageLimitsUpdate(input: {
   }
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
+    ...(previous?.accountId ? { accountId: previous.accountId } : {}),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
   };
 }
@@ -127,7 +128,12 @@ export function resolveUsageLimitsAfterProbe(input: {
   readonly probed: ServerProviderUsageLimits | undefined;
 }): ServerProviderUsageLimits | undefined {
   const { published, probed } = input;
-  if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
+  if (
+    probed?.unavailable?.reason === "probeFailed" &&
+    published &&
+    !published.unavailable &&
+    published.accountId === probed.accountId
+  ) {
     return published;
   }
   return probed;

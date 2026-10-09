@@ -106,3 +106,15 @@ skill, command, and permission behavior as a normal thread.
 Gemini can occasionally reject a prompt because the selected model has no available capacity. T3
 Code briefly retries these capacity failures before reporting them. If Gemini remains unavailable,
 wait a moment and try again or temporarily select another model.
+
+## Usage And Quotas
+
+Open **Usage** to see saved Gemini CLI token history and estimated API-equivalent costs, including
+work outside T3 Code in the same Gemini home. These estimates are not your company's subscription bill.
+
+**Usage → Limits** shows remaining model quotas and reset times for Google sign-in / Gemini Code Assist.
+You can also use `/usage-limits` in a Gemini thread. Company accounts may need `GOOGLE_CLOUD_PROJECT`
+in the instance's environment settings. T3 reads the existing CLI login without opening sign-in.
+Quota reporting currently requires file-based Google credentials; API-key, Vertex AI, encrypted
+credential storage, and custom Code Assist endpoints are unsupported. Token history remains available
+for these setups when the CLI saves token metadata.

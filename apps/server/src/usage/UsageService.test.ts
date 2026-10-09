@@ -729,6 +729,79 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "reports Gemini costs from disabled instances and resumes history updates without double counting",
+    () =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        const geminiHome = NodePath.join(home, "gemini-work");
+        const directory = NodePath.join(geminiHome, ".gemini", "tmp", "project", "chats");
+        const file = NodePath.join(directory, "session-main.jsonl");
+        const response = (output: number) =>
+          encodeUnknownJsonString({
+            id: "gemini-response",
+            type: "gemini",
+            model: "gemini-2.5-pro",
+            timestamp: "2026-08-01T10:00:00Z",
+            tokens: { input: 100, cached: 40, output, thoughts: 20 },
+          }) + "\n";
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(directory, { recursive: true });
+          await NodeFSP.writeFile(file, '{"sessionId":"gemini-native-session"}\n' + response(30));
+        });
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-service-gemini",
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  [ProviderInstanceId.make("gemini-work")]: {
+                    driver: ProviderDriverKind.make("gemini"),
+                    enabled: false,
+                    config: { homePath: geminiHome },
+                  },
+                  [ProviderInstanceId.make("gemini-same-home")]: {
+                    driver: ProviderDriverKind.make("gemini"),
+                    environment: [{ name: "GEMINI_CLI_HOME", value: geminiHome, sensitive: false }],
+                  },
+                },
+              },
+              ratesDocument: {
+                "gemini-2.5-pro": {
+                  input_cost_per_token: 1e-6,
+                  cache_read_input_token_cost: 0.1e-6,
+                  output_cost_per_token: 2e-6,
+                },
+              },
+            }),
+          ),
+        );
+        const first = yield* service.readSummary(WINDOW);
+        const bucket = first.buckets.find((entry) => entry.provider === "gemini");
+        assert.deepEqual(bucket?.totals, {
+          uncachedInputTokens: 60,
+          cachedInputTokens: 40,
+          cacheCreationTokens: 0,
+          outputTokens: 50,
+          reasoningTokens: 20,
+        });
+        assert.closeTo(bucket?.costUsd ?? 0, 0.000164, 1e-10);
+        assert.equal(
+          first.sources.filter((source) => source.fingerprint.provider === "gemini").length,
+          1,
+        );
+        yield* Effect.promise(() => NodeFSP.appendFile(file, response(80)));
+        const updated = yield* service.readSummary(WINDOW);
+        const changed = updated.buckets.find((entry) => entry.provider === "gemini");
+        assert.equal(changed?.records, 1);
+        assert.equal(changed?.totals.outputTokens, 100);
+        const warm = yield* service.readSummary(WINDOW);
+        assert.deepEqual(warm.buckets, updated.buckets);
+      }).pipe(Effect.scoped),
+  );
+
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

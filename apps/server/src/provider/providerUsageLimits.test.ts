@@ -79,6 +79,22 @@ describe("applyUsageLimitsUpdate", () => {
 });
 
 describe("resolveUsageLimitsAfterProbe", () => {
+  it("does not inherit quota from a different scoped account after a failed probe", () => {
+    const previous = { ...published, accountId: "account-project-a" };
+    const failed = {
+      checkedAt,
+      windows: [],
+      accountId: "account-project-b",
+      unavailable: { reason: "probeFailed" as const },
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: previous, probed: failed })).toBe(failed);
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: previous,
+        probed: { ...failed, accountId: previous.accountId },
+      }),
+    ).toBe(previous);
+  });
   it("keeps the last good windows through a failed probe but not an unsupported one", () => {
     const failed = { checkedAt, windows: [], unavailable: { reason: "probeFailed" as const } };
     const unsupported = { checkedAt, windows: [], unavailable: { reason: "unsupported" as const } };

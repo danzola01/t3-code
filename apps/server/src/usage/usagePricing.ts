@@ -29,10 +29,12 @@ export interface TokenRates {
  * for each faster speed the model publishes. A request at a speed with no
  * published rates bills at the standard rates.
  *
- * LiteLLM also publishes `*_above_272k_tokens`, `*_flex`, and `*_batches`
- * variants. Transcripts don't record those, so we don't price them.
+ * Gemini's >200k prompt tier is selected per response. Other context,
+ * flex and batch variants are not represented in native usage records.
  */
 export interface ModelRate extends TokenRates {
+  /** Gemini rates when a single response's input exceeds 200,000 tokens. */
+  readonly above200k?: TokenRates;
   /**
    * From LiteLLM's `provider_specific_entry.fast` multiple (Claude fast mode),
    * or else its `*_priority` rates (Codex `priority`).
@@ -148,8 +150,12 @@ export function parseRateTable(document: unknown): RateTable {
     const key = normalizeRateKey(name);
     if (key.length === 0) continue;
     const multiple = fastMultiplier(entry);
+    const above200k = bareModelName(key).startsWith("gemini-")
+      ? readTokenRates(entry, "_above_200k_tokens", standard)
+      : null;
     table.set(key, {
       ...standard,
+      ...(above200k ? { above200k } : {}),
       fast:
         multiple === null
           ? readTokenRates(entry, "_priority", standard)
@@ -190,14 +196,18 @@ function sameTokenRates(a: TokenRates | null, b: TokenRates | null): boolean {
 function sameRate(a: ModelRate, b: ModelRate): boolean {
   return (
     sameTokenRates(a, b) &&
+    sameTokenRates(a.above200k ?? null, b.above200k ?? null) &&
     sameTokenRates(a.fast, b.fast) &&
     sameTokenRates(a.ultrafast, b.ultrafast)
   );
 }
 
 /** The rates a request at `speed` bills at. */
-function ratesAt(rate: ModelRate, speed: UsageSpeed): TokenRates {
-  return (speed === "standard" ? null : rate[speed]) ?? rate;
+function ratesAt(rate: ModelRate, speed: UsageSpeed, totals: UsageTokenTotals): TokenRates {
+  const inputTokens =
+    totals.uncachedInputTokens + totals.cachedInputTokens + totals.cacheCreationTokens;
+  const standard = inputTokens > 200_000 ? (rate.above200k ?? rate) : rate;
+  return (speed === "standard" ? null : rate[speed]) ?? standard;
 }
 
 function normalizeRateKey(model: string): string {
@@ -321,11 +331,13 @@ export function priceUsage(
     return reported === null ? unsplit(0, "unpriced") : unsplit(reported, "providerReported");
   }
 
-  const listCost = costByCategory(totals, ratesAt(rate, record.speed));
+  const listCost = costByCategory(totals, ratesAt(rate, record.speed, totals));
   const listCostUsd = sumCategories(listCost);
   if (reported !== null && listCostUsd <= 0) return unsplit(reported, "providerReported");
   const premiumUsd =
-    record.speed === "standard" ? 0 : listCostUsd - sumCategories(costByCategory(totals, rate));
+    record.speed === "standard"
+      ? 0
+      : listCostUsd - sumCategories(costByCategory(totals, ratesAt(rate, "standard", totals)));
   const scale = reported === null ? 1 : reported / listCostUsd;
   return {
     costUsd: reported ?? listCostUsd,
@@ -352,6 +364,6 @@ export function cacheSavingsUsd(
   const rate =
     overrides?.get(record.model.trim()) ?? lookupRate(table, record.rateModel ?? record.model);
   if (rate === null) return 0;
-  const rates = ratesAt(rate, record.speed);
+  const rates = ratesAt(rate, record.speed, record.totals);
   return record.totals.cachedInputTokens * (rates.inputCostPerToken - rates.cacheReadCostPerToken);
 }
