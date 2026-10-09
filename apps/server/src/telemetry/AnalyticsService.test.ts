@@ -130,6 +130,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               T3CODE_TELEMETRY_ENABLED: true,
+              T3CODE_DISABLE_TELEMETRY: false,
               T3CODE_POSTHOG_KEY: "phc_test_key",
               T3CODE_POSTHOG_HOST: "http://localhost",
             }),
@@ -173,6 +174,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           T3CODE_TELEMETRY_ENABLED: true,
+          T3CODE_DISABLE_TELEMETRY: false,
           T3CODE_POSTHOG_KEY: "phc_test_key",
           T3CODE_POSTHOG_HOST: "http://localhost",
           T3CODE_TELEMETRY_FLUSH_BATCH_SIZE: 20,
@@ -264,7 +266,7 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
     }),
   );
 
-  it.effect("does not send batch requests when telemetry is disabled", () =>
+  it.effect("global opt-out stops product analytics despite an explicit opt-in", () =>
     Effect.gen(function* () {
       const capturedPaths: Array<string> = [];
       const layerServerConfig = ServerConfig.ServerConfig.layerTest(process.cwd(), {
@@ -273,7 +275,8 @@ it.layer(NodeServices.layer)("AnalyticsService test", (it) => {
       const layerTelemetry = AnalyticsService.layer.pipe(Layer.provideMerge(layerServerConfig));
       const layerConfig = ConfigProvider.layer(
         ConfigProvider.fromUnknown({
-          T3CODE_TELEMETRY_ENABLED: false,
+          T3CODE_TELEMETRY_ENABLED: true,
+          T3CODE_DISABLE_TELEMETRY: true,
           T3CODE_POSTHOG_KEY: "phc_test_key",
           T3CODE_POSTHOG_HOST: "http://localhost",
         }),

@@ -4,7 +4,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Path from "effect/Path";
-import { readGeminiDiscoverySettings, readGeminiSelectedAuthMethod } from "./GeminiHome.ts";
+import {
+  makeGeminiEnvironment,
+  readGeminiDiscoverySettings,
+  readGeminiSelectedAuthMethod,
+} from "./GeminiHome.ts";
 import { discoverGeminiCatalog, expandGeminiCustomCommand } from "./GeminiCatalog.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -28,6 +32,21 @@ const fixture = Effect.gen(function* () {
 });
 
 it.layer(NodeServices.layer)("Gemini settings compatibility", (it) => {
+  it.effect("forces Gemini telemetry off for T3 launched processes", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeGeminiEnvironment(
+        { homePath: "" },
+        { GEMINI_TELEMETRY_ENABLED: "true" },
+      );
+      assert.equal(environment.GEMINI_TELEMETRY_ENABLED, "false");
+      const unlocked = yield* makeGeminiEnvironment(
+        { homePath: "" },
+        { T3CODE_DISABLE_TELEMETRY: "false", GEMINI_TELEMETRY_ENABLED: "true" },
+      );
+      assert.equal(unlocked.GEMINI_TELEMETRY_ENABLED, "true");
+    }),
+  );
+
   it.effect(
     "preserves commented authentication and merges disabled skills across trusted settings",
     () =>

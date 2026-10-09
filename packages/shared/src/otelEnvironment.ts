@@ -56,6 +56,11 @@ const blankAsUnset = (value: string | undefined): string | undefined => {
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 };
 
+/** This fork keeps outbound telemetry off unless explicitly unlocked. */
+export function isOutboundTelemetryDisabled(value: string | undefined): boolean {
+  return !["false", "no", "off", "0", "n"].includes(value?.trim().toLowerCase() ?? "");
+}
+
 interface Flag {
   /** `undefined` when the variable is unset, blank, or unreadable. */
   readonly value: boolean | undefined;
@@ -291,6 +296,7 @@ const endpointSignal = (name: OtlpSignalName, own: Settings, generic: Settings):
 };
 
 export const load: Effect.Effect<OtelEnvironment> = Config.all({
+  global: Config.String("T3CODE_DISABLE_TELEMETRY").pipe(Config.withDefault("true")),
   t3: flag(
     "T3CODE_OTEL_SDK_DISABLED",
     T3CODE_TRUE,
@@ -318,8 +324,9 @@ export const load: Effect.Effect<OtelEnvironment> = Config.all({
     logs: exporter("OTEL_LOGS_EXPORTER"),
   }),
 }).pipe(
-  Effect.map(({ t3, spec, resource, generic, exporters, ...own }) => {
-    const disabled = t3.value ?? spec.value ?? false;
+  Effect.map(({ global, t3, spec, resource, generic, exporters, ...own }) => {
+    const globallyDisabled = isOutboundTelemetryDisabled(global);
+    const disabled = globallyDisabled || (t3.value ?? spec.value ?? false);
     // The kill switch wins outright, so the signals say nothing once it is set.
     const signals = disabled
       ? undefined
@@ -340,9 +347,11 @@ export const load: Effect.Effect<OtelEnvironment> = Config.all({
     ].filter((warning) => warning !== undefined);
     if (disabled) {
       warnings.push(
-        t3.value
-          ? "T3CODE_OTEL_SDK_DISABLED is set, so no telemetry is exported, whatever configured it"
-          : "OTEL_SDK_DISABLED is set, so no telemetry is exported, whatever configured it; set T3CODE_OTEL_SDK_DISABLED=false to export anyway",
+        globallyDisabled
+          ? "T3CODE_DISABLE_TELEMETRY is active, so T3 Code does not export telemetry"
+          : t3.value
+            ? "T3CODE_OTEL_SDK_DISABLED is set, so no telemetry is exported, whatever configured it"
+            : "OTEL_SDK_DISABLED is set, so no telemetry is exported, whatever configured it; set T3CODE_OTEL_SDK_DISABLED=false to export anyway",
       );
     }
     return {
@@ -418,7 +427,7 @@ export const layerResourceAttributes = (attributes: Readonly<Record<string, stri
 
 /** An environment that asked for nothing, for tests and for the pairing CLI. */
 export const none: OtelEnvironment = {
-  disabled: false,
+  disabled: true,
   warnings: [],
   resourceAttributes: {},
   traces: OtelSignal.Unset(),

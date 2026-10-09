@@ -7,7 +7,13 @@ import * as OtlpResource from "effect/observability/OtlpResource";
 import * as OtelEnvironment from "./otelEnvironment.ts";
 
 const load = (env: Record<string, string>) =>
-  OtelEnvironment.load.pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+  OtelEnvironment.load.pipe(
+    Effect.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromEnv({ env: { T3CODE_DISABLE_TELEMETRY: "false", ...env } }),
+      ),
+    ),
+  );
 
 const SPEC_OFF =
   "OTEL_SDK_DISABLED is set, so no telemetry is exported, whatever configured it; set T3CODE_OTEL_SDK_DISABLED=false to export anyway";
@@ -17,6 +23,40 @@ const specIgnored = (value: string) =>
   `OTEL_SDK_DISABLED=${value} was read as false; the OpenTelemetry specification recognizes only the string true, so use OTEL_SDK_DISABLED=true or T3CODE_OTEL_SDK_DISABLED to say it any other way`;
 
 describe("OtelEnvironment", () => {
+  it.effect("disables all exports by default, even when a signal is configured", () =>
+    Effect.gen(function* () {
+      const resolved = yield* OtelEnvironment.load.pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example" },
+            }),
+          ),
+        ),
+      );
+      assert.isTrue(resolved.disabled);
+      for (const signal of ["traces", "metrics", "logs"] as const) {
+        assert.isUndefined(
+          OtelEnvironment.resolveSignalEndpoint(resolved, signal, {
+            url: "https://collector.example",
+            export: { protocol: "http/json", headers: {}, exportIntervalMs: 10_000 },
+          }),
+        );
+      }
+      assert.include(resolved.warnings.join(" "), "T3CODE_DISABLE_TELEMETRY");
+    }),
+  );
+
+  it.effect("global opt-out overrides an explicit OTEL enablement", () =>
+    Effect.gen(function* () {
+      const resolved = yield* load({
+        T3CODE_DISABLE_TELEMETRY: "true",
+        T3CODE_OTEL_SDK_DISABLED: "false",
+      });
+      assert.isTrue(resolved.disabled);
+    }),
+  );
+
   it.effect.each([
     { name: "nothing set", env: {}, disabled: false, warnings: [] },
     // OTEL_SDK_DISABLED follows the specification: only `true`, case-insensitively.

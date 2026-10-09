@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 
 import type { GeminiSettings } from "@t3tools/contracts";
+import { isOutboundTelemetryDisabled } from "@t3tools/shared/otelEnvironment";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -158,12 +159,15 @@ export const makeGeminiEnvironment = Effect.fn("makeGeminiEnvironment")(function
   const resolvedBaseEnv = tokenizeCliArgs(config.launchArgs).includes("--skip-trust")
     ? { ...(baseEnv ?? process.env), GEMINI_CLI_TRUST_WORKSPACE: "true" }
     : (baseEnv ?? process.env);
+  const processEnv = isOutboundTelemetryDisabled(resolvedBaseEnv.T3CODE_DISABLE_TELEMETRY)
+    ? { ...resolvedBaseEnv, GEMINI_TELEMETRY_ENABLED: "false" }
+    : resolvedBaseEnv;
   const configuredHome = config.homePath.trim();
-  if (configuredHome.length === 0) return resolvedBaseEnv;
+  if (configuredHome.length === 0) return processEnv;
 
   const path = yield* Path.Path;
   return {
-    ...resolvedBaseEnv,
+    ...processEnv,
     GEMINI_CLI_HOME: path.resolve(expandHomePath(configuredHome)),
   };
 });

@@ -61,9 +61,10 @@ update it with `git pull` and a rebuild.
 
 ## Anonymous telemetry
 
-Anonymous product analytics are disabled by default. To explicitly opt in, set
-`T3CODE_TELEMETRY_ENABLED=true` when starting the T3 Code server. This setting does not affect
-local resource diagnostics or observability exports that you configure separately.
+Outbound telemetry is disabled by default in this fork. To allow configured exports, set
+`T3CODE_DISABLE_TELEMETRY=false` before starting T3 Code. Product analytics additionally require
+`T3CODE_TELEMETRY_ENABLED=true`. Local resource diagnostics stay available. See
+[Product usage data](./telemetry.md).
 
 ## Desktop app
 
