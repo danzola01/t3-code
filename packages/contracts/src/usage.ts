@@ -35,7 +35,6 @@ export const UsageProviderKind = Schema.Literals([
   "claude",
   "codex",
   "grok",
-  "gemini",
   "cursor",
   "opencode",
   "antigravity",

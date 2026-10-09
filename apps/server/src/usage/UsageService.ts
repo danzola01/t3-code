@@ -23,7 +23,6 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
-  GeminiSettings,
   type ProviderInstanceConfig,
   ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
@@ -60,7 +59,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
-import { resolveGeminiConfigDir } from "../provider/gemini/GeminiHome.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { makeAntigravityUsageCache, readAntigravityUsage } from "./antigravityUsageReader.ts";
 import {
@@ -76,12 +74,7 @@ import {
 } from "./cursorAccountCache.ts";
 import * as CursorUsageReader from "./cursorUsageReader.ts";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import {
-  createOverrideRateTable,
-  parseRateTable,
-  priceUsage,
-  type RateTable,
-} from "./usagePricing.ts";
+import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -128,7 +121,6 @@ const TRANSCRIPT_READ_CONCURRENCY = 4;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
-const decodeGeminiSettings = Schema.decodeOption(GeminiSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -186,12 +178,6 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
-    /** Prices ACP turn totals using rates already cached locally, without a network wait. */
-    readonly priceGeminiTurn: (
-      modelUsage: Readonly<
-        Record<string, { readonly inputTokens: number; readonly outputTokens: number }>
-      >,
-    ) => Effect.Effect<number | null>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -203,7 +189,7 @@ const EMPTY_PRICING: UsagePricing = {
 };
 
 /** Empty summary, for suites that only need the RPC surface to resolve. */
-export const layerTest = Layer.succeed(
+const layerTest = Layer.succeed(
   UsageService,
   UsageService.of({
     readSummary: (input) =>
@@ -219,7 +205,6 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
-    priceGeminiTurn: () => Effect.succeed(null),
   }),
 );
 
@@ -269,8 +254,6 @@ export const make = Effect.gen(function* () {
   let rates: RateTable = new Map();
   let ratesFetchedAtMs: number | null = null;
   let ratesStatus: UsagePricing["status"] = "unavailable";
-  let savedRatesChecked = false;
-  let backgroundRatesRequested = false;
   // One fetch at a time. A burst of refreshes from several clients waits on
   // the first fetch and then sees a table young enough to skip its own.
   const ratesLock = yield* Semaphore.make(1);
@@ -343,63 +326,6 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("UsageService.refreshRates"),
   );
 
-  const priceGeminiTurn = Effect.fn("UsageService.priceGeminiTurn")(function* (
-    modelUsage: Readonly<
-      Record<string, { readonly inputTokens: number; readonly outputTokens: number }>
-    >,
-  ) {
-    if (rates.size === 0 && !savedRatesChecked) {
-      savedRatesChecked = true;
-      const fromDisk = yield* fileSystem.readFileString(ratesCachePath).pipe(
-        Effect.flatMap((raw) => decodeRatesCache(raw)),
-        Effect.catchCause(() => Effect.succeed(null)),
-      );
-      if (fromDisk !== null && rates.size === 0) {
-        rates = parseRateTable(fromDisk.document);
-        if (rates.size > 0) ratesStatus = "cached";
-      }
-    }
-    const settings = yield* settingsService.getSettings.pipe(
-      Effect.catchCause(() => Effect.succeed(null)),
-    );
-    const overrides = createOverrideRateTable(settings?.usagePriceOverrides ?? {});
-    if (rates.size === 0 && !backgroundRatesRequested) {
-      backgroundRatesRequested = true;
-      yield* ensureRates(false).pipe(Effect.forkDetach);
-    }
-    let costUsd = 0;
-    let priced = false;
-    for (const [model, usage] of Object.entries(modelUsage)) {
-      if (
-        !Number.isSafeInteger(usage.inputTokens) ||
-        usage.inputTokens < 0 ||
-        !Number.isSafeInteger(usage.outputTokens) ||
-        usage.outputTokens < 0
-      )
-        return null;
-      const result = priceUsage(
-        rates,
-        {
-          model,
-          totals: {
-            uncachedInputTokens: usage.inputTokens,
-            cachedInputTokens: 0,
-            cacheCreationTokens: 0,
-            outputTokens: usage.outputTokens,
-            reasoningTokens: 0,
-          },
-          reportedCostUsd: null,
-          speed: "standard",
-        },
-        overrides,
-      );
-      if (result.costSource === "unpriced") return null;
-      priced = true;
-      costUsd += result.costUsd;
-    }
-    return priced ? costUsd : null;
-  });
-
   // A settings failure must not silently discard custom rates or transcript homes.
   const readSettings = settingsService.getSettings.pipe(
     Effect.catchCause(
@@ -422,10 +348,9 @@ export const make = Effect.gen(function* () {
       dir: string;
       volumeId: string;
       fileName?: string;
-      filePrefix?: string;
     }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok", "gemini"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<
@@ -435,7 +360,7 @@ export const make = Effect.gen(function* () {
         .map(([id, instance]) => ({ ...instance, instanceId: ProviderInstanceId.make(id) }));
       if (!Object.hasOwn(settings.providerInstances, driver)) {
         instances.push({
-          config: driver === "gemini" ? {} : settings.providers[driver],
+          config: settings.providers[driver],
           instanceId: ProviderInstanceId.make(driver),
         });
       }
@@ -464,20 +389,12 @@ export const make = Effect.gen(function* () {
           home = configured
             ? expandHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
-        } else if (driver === "gemini") {
-          const decoded = decodeGeminiSettings(instance.config ?? {});
-          if (Option.isNone(decoded)) continue;
-          const configDir = yield* resolveGeminiConfigDir(decoded.value, environment);
-          home = path.join(configDir, "tmp");
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(
-          home,
-          provider === "claude" ? "projects" : provider === "gemini" ? "" : "sessions",
-        );
+        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,
@@ -512,7 +429,6 @@ export const make = Effect.gen(function* () {
           dir,
           volumeId,
           ...(provider === "grok" ? { fileName: "updates.jsonl" } : {}),
-          ...(provider === "gemini" ? { filePrefix: "session-" } : {}),
         });
       }
     }
@@ -703,20 +619,16 @@ export const make = Effect.gen(function* () {
       readonly dir: string;
       readonly volumeId: string;
       readonly fileName?: string;
-      readonly filePrefix?: string;
     },
     windowStartMs: number,
   ) {
-    const { provider, dir, volumeId, fileName, filePrefix } = source;
+    const { provider, dir, volumeId, fileName } = source;
     const exists = yield* fileSystem
       .exists(dir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
     if (!exists) return { provider, dir, volumeId, files: null } satisfies ScannedDir;
     const files = yield* Effect.promise(() =>
-      listTranscriptFiles(dir, windowStartMs, {
-        ...(fileName === undefined ? {} : { fileName }),
-        ...(filePrefix === undefined ? {} : { filePrefix }),
-      }),
+      listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
     );
     // A cold parse waits on disk reads, so a few files in flight read
     // close to twice as fast. Results keep walk order.
@@ -1327,7 +1239,7 @@ export const make = Effect.gen(function* () {
 
   // `awaitPersisted` is outside the service interface: tests use it to restart
   // against what a previous instance wrote.
-  return { readSummary, refreshRates, priceGeminiTurn, awaitPersisted } as const;
+  return { readSummary, refreshRates, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

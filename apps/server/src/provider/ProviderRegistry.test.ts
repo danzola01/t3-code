@@ -1,4 +1,3 @@
-import * as UsageService from "../usage/UsageService.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -386,7 +385,6 @@ const awaitPersistedProvider = (
 
 const layerTestNodeServices = Layer.mergeAll(
   NodeServices.layer,
-  UsageService.layerTest,
   Layer.mock(CodexInstallation.CodexInstallation)({
     managedDirectory: "unused-managed-installation",
   }),

@@ -30,7 +30,6 @@ import {
   type ProviderUserInputAnswers,
   type RuntimeRequestId,
   type ThreadTokenUsageSnapshot,
-  type TurnTokenUsage,
   type ThreadId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -223,17 +222,6 @@ export interface AcpAdapterV2Flavor {
     readonly text: string;
     readonly resources: ReadonlyArray<EffectAcpSchema.ContentBlock>;
   }>;
-  readonly promptSettlement?: (
-    response: EffectAcpSchema.PromptResponse,
-    metadata: OrchestrationV2ProviderThreadNativeMetadata | null,
-  ) => Effect.Effect<
-    | {
-        readonly usage: TurnTokenUsage;
-        readonly metadata: OrchestrationV2ProviderThreadNativeMetadata;
-        readonly summary: string;
-      }
-    | undefined
-  >;
   /** Interprets provider-specific prompt errors before they cross into orchestration. */
   readonly promptFailure?: (cause: unknown) => OrchestrationV2ProviderFailure;
   readonly driver: ProviderDriverKind;
@@ -1185,7 +1173,6 @@ interface ActiveAcpTurn {
         readonly itemOrdinal: number;
       }
     | undefined;
-  turnTokenUsage?: TurnTokenUsage;
   contextUsage: ThreadTokenUsageSnapshot | null;
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata | null;
   readonly tools: Map<string, AcpToolCallState>;
@@ -6531,7 +6518,6 @@ export function makeAcpAdapterV2(
           status,
           startedAt: context.startedAt,
           completedAt,
-          ...(context.turnTokenUsage ? { turnTokenUsage: context.turnTokenUsage } : {}),
         });
 
         const terminalizeOpenRunOwnedItems = Effect.fnUntraced(function* (
@@ -7203,41 +7189,6 @@ export function makeAcpAdapterV2(
                   promptGeneration,
                   Effect.gen(function* () {
                     if (context.finalized) return;
-                    const settlement = yield* (
-                      flavor.promptSettlement?.(result, context.nativeMetadata) ??
-                        Effect.succeed(undefined)
-                    );
-                    if (settlement !== undefined) {
-                      context.turnTokenUsage = settlement.usage;
-                      context.nativeMetadata = settlement.metadata;
-                      yield* Ref.update(nativeMetadataBySessionId, (current) =>
-                        new Map(current).set(context.nativeThreadId, settlement.metadata),
-                      );
-                      const now = yield* DateTime.now;
-                      const nativeItemId = `${context.nativeTurnId}:usage`;
-                      yield* emitProviderEvent({
-                        type: "turn_item.updated",
-                        driver,
-                        turnItem: {
-                          id: idAllocator.derive.turnItemFromProviderItem({ driver, nativeItemId }),
-                          threadId: context.input.threadId,
-                          runId: context.input.runId,
-                          nodeId: context.input.rootNodeId,
-                          providerThreadId: context.input.providerThread.id,
-                          providerTurnId: context.providerTurnId,
-                          nativeItemRef: { driver, nativeId: nativeItemId, strength: "weak" },
-                          parentItemId: null,
-                          ordinal: yield* resolveItemOrdinal(context, nativeItemId),
-                          status: "completed",
-                          title: null,
-                          startedAt: now,
-                          completedAt: now,
-                          updatedAt: now,
-                          type: "system_notice",
-                          message: settlement.summary,
-                        },
-                      });
-                    }
                     const status =
                       result.stopReason === "cancelled"
                         ? context.interrupted

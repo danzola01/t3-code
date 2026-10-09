@@ -30,7 +30,6 @@ export const PROVIDER_PRESENTATION = {
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     driverKind: ProviderDriverKind.make("grok"),
   },
-  gemini: { label: "Gemini CLI", color: "#6488c7", driverKind: ProviderDriverKind.make("gemini") },
   cursor: { label: "Cursor", color: "#8b8b8b", driverKind: ProviderDriverKind.make("cursor") },
   opencode: {
     label: "OpenCode",

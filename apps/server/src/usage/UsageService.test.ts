@@ -113,7 +113,6 @@ const layerService = (input: {
       Layer.succeed(HostProcessEnvironment, {
         HOME: input.home,
         GROK_HOME: NodePath.join(input.home, "grok"),
-        GEMINI_CLI_HOME: NodePath.join(input.home, "gemini"),
         OPENCODE_DATA_DIR: NodePath.join(input.home, "opencode"),
         ANTIGRAVITY_DATA_DIR: NodePath.join(input.home, "antigravity"),
         XDG_CONFIG_HOME: NodePath.join(input.home, "config"),
@@ -228,100 +227,6 @@ function cursorSource(summary: { readonly sources: readonly UsageSource[] }) {
 }
 
 describe("UsageService", () => {
-  it.live("includes Gemini chat history from configured homes in API cost estimates", () =>
-    Effect.gen(function* () {
-      const { settings, home } = yield* setup;
-      const workHome = NodePath.join(home, "work-gemini");
-      const personalHome = NodePath.join(home, "personal-gemini");
-      const writeSession = (root: string, id: string, output: number) =>
-        Effect.promise(async () => {
-          const chats = NodePath.join(root, ".gemini", "tmp", "project", "chats");
-          await NodeFSP.mkdir(chats, { recursive: true });
-          await NodeFSP.writeFile(
-            NodePath.join(chats, `session-${id}.jsonl`),
-            [
-              { sessionId: id, startTime: "2026-08-01T10:00:00Z" },
-              {
-                id: `message-${id}`,
-                timestamp: "2026-08-01T10:00:00Z",
-                type: "gemini",
-                model: "gemini-3.5-flash",
-                tokens: { input: 100, output, cached: 0, thoughts: 5, tool: 0 },
-              },
-            ]
-              .map((line) => encodeUnknownJsonString(line))
-              .join("\n") + "\n",
-          );
-        });
-      yield* writeSession(workHome, "work", 10);
-      yield* writeSession(personalHome, "personal", 20);
-      const service = yield* UsageService.make.pipe(
-        Effect.provide(
-          layerService({
-            prefix: "usage-service-gemini-test",
-            home,
-            settings: {
-              ...settings,
-              providerInstances: {
-                [ProviderInstanceId.make("gemini-work")]: {
-                  driver: ProviderDriverKind.make("gemini"),
-                  enabled: false,
-                  environment: [{ name: "GEMINI_CLI_HOME", value: workHome, sensitive: false }],
-                },
-                [ProviderInstanceId.make("gemini-personal")]: {
-                  driver: ProviderDriverKind.make("gemini"),
-                  config: { homePath: personalHome },
-                },
-              },
-            },
-            ratesDocument: {
-              "gemini-3.5-flash": {
-                input_cost_per_token: 0.000001,
-                output_cost_per_token: 0.000004,
-              },
-            },
-          }),
-        ),
-      );
-      const summary = yield* service.readSummary(WINDOW);
-      const gemini = summary.buckets.filter((bucket) => bucket.provider === "gemini");
-      assert.strictEqual(gemini.length, 2);
-      assert.sameMembers(
-        gemini.map((bucket) => bucket.sourcePath),
-        [workHome, personalHome].map((root) => NodePath.join(root, ".gemini", "tmp")),
-      );
-      assert.strictEqual(
-        gemini.reduce((sum, bucket) => sum + bucket.sessions, 0),
-        2,
-      );
-      assert.strictEqual(
-        gemini.reduce((sum, bucket) => sum + bucket.totals.uncachedInputTokens, 0),
-        200,
-      );
-      assert.strictEqual(totalOutputTokens({ buckets: gemini }), 40);
-      assert.strictEqual(
-        gemini.reduce((sum, bucket) => sum + bucket.totals.reasoningTokens, 0),
-        10,
-      );
-      assert.isTrue(gemini.every((bucket) => bucket.costSource === "modelPriced"));
-      assert.closeTo(
-        gemini.reduce((sum, bucket) => sum + bucket.costUsd, 0),
-        0.00036,
-        1e-10,
-      );
-      const turnCost = yield* service.priceGeminiTurn({
-        "gemini-3.5-flash": { inputTokens: 100, outputTokens: 20 },
-      });
-      assert.closeTo(turnCost ?? 0, 0.00018, 1e-10);
-      assert.strictEqual(
-        yield* service.priceGeminiTurn({
-          "unpriced-model": { inputTokens: 100, outputTokens: 20 },
-        }),
-        null,
-      );
-    }),
-  );
-
   it.live.each([
     { explicitDefault: true, label: "explicit" },
     { explicitDefault: false, label: "legacy" },

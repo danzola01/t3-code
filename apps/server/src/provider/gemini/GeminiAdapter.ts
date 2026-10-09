@@ -16,8 +16,6 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import { makeProviderFailure } from "../../orchestration-v2/ProviderFailure.ts";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import { UsageService } from "../../usage/UsageService.ts";
-import { formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { ServerConfig } from "../../config.ts";
 import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import {
@@ -39,25 +37,6 @@ const decodeUnknownJsonString = Schema.decodeUnknownOption(Schema.fromJsonString
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-const GeminiPromptQuota = Schema.Struct({
-  quota: Schema.Struct({
-    token_count: Schema.Struct({
-      input_tokens: Schema.Number,
-      output_tokens: Schema.Number,
-    }),
-    model_usage: Schema.Array(
-      Schema.Struct({
-        model: Schema.String,
-        token_count: Schema.Struct({
-          input_tokens: Schema.Number,
-          output_tokens: Schema.Number,
-        }),
-      }),
-    ),
-  }),
-});
-const decodeGeminiPromptQuota = Schema.decodeUnknownOption(GeminiPromptQuota);
-
 interface GeminiMcpToolIdentity {
   readonly server: string;
   readonly tool: string;
@@ -145,33 +124,6 @@ export function normalizeGeminiMcpToolCall(
   };
 }
 
-export function usageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
-  if (response.usage) return response.usage;
-  const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
-  if (!meta) return undefined;
-  const inputTokens = Math.max(0, Math.trunc(meta.quota.token_count.input_tokens));
-  const outputTokens = Math.max(0, Math.trunc(meta.quota.token_count.output_tokens));
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  } satisfies EffectAcpSchema.Usage;
-}
-
-export function modelUsageFromGeminiPromptResponse(response: EffectAcpSchema.PromptResponse) {
-  const meta = Option.getOrUndefined(decodeGeminiPromptQuota(response._meta));
-  if (!meta) return undefined;
-  return Object.fromEntries(
-    meta.quota.model_usage.map((usage) => [
-      usage.model,
-      {
-        inputTokens: Math.max(0, Math.trunc(usage.token_count.input_tokens)),
-        outputTokens: Math.max(0, Math.trunc(usage.token_count.output_tokens)),
-      },
-    ]),
-  );
-}
-
 export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
   settings: GeminiSettings,
   options: {
@@ -185,7 +137,6 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     readonly onSessionStarted?: (started: AcpSessionRuntimeStartResult) => Effect.Effect<void>;
   },
 ) {
-  const usageService = yield* UsageService;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -244,43 +195,6 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
             Effect.provideService(Path.Path, path),
           );
           return { text: prepared, resources: expanded.resources };
-        }),
-      promptSettlement: (response, metadata) =>
-        Effect.gen(function* () {
-          const usage = usageFromGeminiPromptResponse(response);
-          if (
-            !usage ||
-            !Number.isSafeInteger(usage.inputTokens) ||
-            !Number.isSafeInteger(usage.outputTokens)
-          )
-            return undefined;
-          const costUsd = yield* usageService.priceGeminiTurn(
-            modelUsageFromGeminiPromptResponse(response) ?? {},
-          );
-          const previous = metadata?.geminiUsage;
-          const totals = {
-            inputTokens: (previous?.inputTokens ?? 0) + usage.inputTokens,
-            outputTokens: (previous?.outputTokens ?? 0) + usage.outputTokens,
-            costUsd:
-              costUsd === null || previous?.costUsd === null
-                ? null
-                : (previous?.costUsd ?? 0) + costUsd,
-          };
-          const cost = (value: number | null) =>
-            value === null
-              ? ""
-              : ` · ${value < 0.01 ? `$${value.toFixed(6)}` : formatUsd(value)} API estimate`;
-          return {
-            usage: {
-              usageStatus: "complete" as const,
-              usageScope: "main_agent" as const,
-              hasSubagents: false,
-              inputTokens: usage.inputTokens,
-              outputTokens: usage.outputTokens,
-            },
-            metadata: { ...metadata, geminiUsage: totals },
-            summary: `Gemini used ${formatTokens(usage.inputTokens + usage.outputTokens)} tokens${cost(costUsd)} · thread ${formatTokens(totals.inputTokens + totals.outputTokens)}${cost(totals.costUsd)}`,
-          };
         }),
       capabilities: {
         ...AcpProviderCapabilitiesV2,
@@ -358,8 +272,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
                     schedule: Schedule.spaced("1 second"),
                   }),
                 );
-                const usage = usageFromGeminiPromptResponse(response);
-                return { ...response, ...(usage ? { usage } : {}) };
+                return response;
               }),
           };
         }),

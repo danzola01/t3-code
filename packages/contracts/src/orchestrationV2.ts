@@ -835,13 +835,6 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   title: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   updatedAt: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  geminiUsage: Schema.optional(
-    Schema.Struct({
-      inputTokens: Schema.Number,
-      outputTokens: Schema.Number,
-      costUsd: Schema.NullOr(Schema.Number),
-    }),
-  ),
   /** Version 2 scopes provider-derived item ids by provider instance. */
   itemIdentityVersion: Schema.optional(Schema.Literal(2)),
 });

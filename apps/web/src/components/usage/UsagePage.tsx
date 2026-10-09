@@ -762,48 +762,6 @@ export function UsagePage() {
                   </div>
                 </section>
 
-                {merged.providers.some((provider) => provider.provider === "gemini") ? (
-                  <section className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-sm font-medium text-foreground">Gemini requests</h2>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          const next = {
-                            ...preferences,
-                            showGeminiRequests: !preferences.showGeminiRequests,
-                          };
-                          setPreferences(next);
-                          saveUsagePagePreferences(next);
-                        }}
-                      >
-                        {preferences.showGeminiRequests ? "Hide estimate" : "Show estimate"}
-                      </Button>
-                    </div>
-                    {preferences.showGeminiRequests ? (
-                      <>
-                        <p className="text-xs text-muted-foreground">
-                          Saved Gemini model responses by day. This estimate omits failed requests,
-                          retries without a saved response, and activity outside scanned CLI homes.
-                        </p>
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          {merged.daily
-                            .filter((day) => (day.geminiResponses ?? 0) > 0)
-                            .toReversed()
-                            .map((day) => (
-                              <div key={day.day} className="flex justify-between gap-3 text-sm">
-                                <span>{formatDayShort(day.day)}</span>
-                                <span className="tabular-nums">
-                                  {formatCount(day.geminiResponses ?? 0)}
-                                </span>
-                              </div>
-                            ))}
-                        </div>
-                      </>
-                    ) : null}
-                  </section>
-                ) : null}
                 {merged.totalTokens > 0 ? (
                   <section
                     className={cn(

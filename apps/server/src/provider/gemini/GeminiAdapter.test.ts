@@ -21,8 +21,6 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Deferred from "effect/Deferred";
-import * as Scope from "effect/Scope";
-import { UsageService } from "../../usage/UsageService.ts";
 import { ServerConfig } from "../../config.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import {
@@ -30,11 +28,7 @@ import {
   type ProviderAdapterV2TurnInput,
   type ProviderAdapterV2Event,
 } from "../../orchestration-v2/ProviderAdapter.ts";
-import {
-  makeGeminiAdapter,
-  normalizeGeminiMcpToolCall,
-  usageFromGeminiPromptResponse,
-} from "./GeminiAdapter.ts";
+import { makeGeminiAdapter, normalizeGeminiMcpToolCall } from "./GeminiAdapter.ts";
 function makeTurnInput(input: {
   readonly threadId: ThreadId;
   readonly providerThread: OrchestrationV2ProviderThread;
@@ -102,13 +96,6 @@ function makeTurnInput(input: {
 const layer = ServerConfig.layerTest(process.cwd(), { prefix: "gemini-v2-test-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),
-  Layer.provideMerge(
-    Layer.succeed(UsageService, {
-      readSummary: () => Effect.die("unused"),
-      refreshRates: Effect.die("unused"),
-      priceGeminiTurn: () => Effect.succeed(null),
-    }),
-  ),
 );
 it.layer(layer)("GeminiAdapter V2", (it) => {
   it.effect("runs a prompt through the shared ACP V2 adapter", () =>
@@ -137,7 +124,6 @@ it.layer(layer)("GeminiAdapter V2", (it) => {
           environment: {
             ...process.env,
             GEMINI_CLI_TRUST_WORKSPACE: "true",
-            T3_ACP_EMIT_GEMINI_USAGE: "1",
           },
         },
       );
@@ -176,25 +162,12 @@ it.layer(layer)("GeminiAdapter V2", (it) => {
         (event) =>
           event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
       );
-      assert.equal(
-        completed?.type === "provider_turn.updated"
-          ? completed.providerTurn.turnTokenUsage?.inputTokens
-          : null,
-        12,
-      );
-      assert.isTrue(
-        events.some(
-          (event) =>
-            event.type === "turn_item.updated" &&
-            event.turnItem.type === "system_notice" &&
-            event.turnItem.message.includes("Gemini used"),
-        ),
-      );
+      assert.isDefined(completed);
     }),
   );
 });
 
-describe("Gemini tool and usage normalization", () => {
+describe("Gemini tool normalization", () => {
   it("keeps MCP arguments when a terminal update replaces tool content", () => {
     const call = normalizeGeminiMcpToolCall({
       toolCallId: "tool-1",
@@ -214,14 +187,5 @@ describe("Gemini tool and usage normalization", () => {
       arguments: { query: "T3" },
       result: { content: [{ type: "text", text: '{"issues":[]}' }] },
     });
-  });
-  it("reads Gemini quota metadata as token usage", () => {
-    assert.deepEqual(
-      usageFromGeminiPromptResponse({
-        stopReason: "end_turn",
-        _meta: { quota: { token_count: { input_tokens: 12, output_tokens: 8 }, model_usage: [] } },
-      }),
-      { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
-    );
   });
 });

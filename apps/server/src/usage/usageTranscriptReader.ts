@@ -31,7 +31,6 @@ import {
   parseCodexLine,
   parseCodexRecord,
   parseGrokLine,
-  parseGeminiLine,
   parseGrokRecord,
   type CodexScanState,
   type UsageRecord,
@@ -168,11 +167,9 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string; readonly filePrefix?: string },
+  options?: { readonly fileName?: string },
 ): Promise<readonly TranscriptFile[]> {
   const fileName = options?.fileName;
-  const filePrefix = options?.filePrefix;
-
   const candidates: string[] = [];
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -184,12 +181,7 @@ export async function listTranscriptFiles(
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) await walk(child);
-      else if (
-        fileName !== undefined
-          ? entry.name === fileName
-          : entry.name.endsWith(".jsonl") &&
-            (filePrefix === undefined || entry.name.startsWith(filePrefix))
-      ) {
+      else if (fileName !== undefined ? entry.name === fileName : entry.name.endsWith(".jsonl")) {
         candidates.push(child);
       }
     }
@@ -316,11 +308,6 @@ export async function readTranscriptRecords(
       if (!mightCarryUsage(line, provider)) return;
       if (provider === "grok") {
         for (const grokRecord of parseGrokLine(line)) out.push(grokRecord);
-        return;
-      }
-      if (provider === "gemini") {
-        const record = parseGeminiLine(line, filePath);
-        if (record !== null) out.push(record);
         return;
       }
       const record = parseClaudeLine(line);

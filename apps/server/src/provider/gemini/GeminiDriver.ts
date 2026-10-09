@@ -26,7 +26,6 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { UsageService } from "../../usage/UsageService.ts";
 import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import { makeGeminiAdapter } from "./GeminiAdapter.ts";
 import { makeGeminiEnvironment } from "./GeminiHome.ts";
@@ -53,7 +52,6 @@ export type GeminiDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
-  | UsageService
   | IdAllocatorV2
   | ServerConfig
   | ServerSettingsService;

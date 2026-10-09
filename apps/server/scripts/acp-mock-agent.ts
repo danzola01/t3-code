@@ -50,7 +50,6 @@ const emitActiveToolThenHang = process.env.T3_ACP_EMIT_ACTIVE_TOOL_THEN_HANG ===
 const emitGrokMonitorPostTurnPoll = process.env.T3_ACP_EMIT_GROK_MONITOR_POST_TURN_POLL === "1";
 const emitGrokBackgroundTaskStarted = process.env.T3_ACP_EMIT_GROK_BACKGROUND_TASK_STARTED === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
-const emitGeminiUsage = process.env.T3_ACP_EMIT_GEMINI_USAGE === "1";
 const emitGeminiMcpToolCalls = process.env.T3_ACP_EMIT_GEMINI_MCP_TOOL_CALLS === "1";
 const emitGeminiTopicUpdate = process.env.T3_ACP_EMIT_GEMINI_TOPIC_UPDATE === "1";
 const waitForResumeRelease = process.env.T3_ACP_WAIT_FOR_RESUME_RELEASE === "1";
@@ -465,16 +464,7 @@ const program = Effect.gen(function* () {
   const finishPrompt = (
     targetSessionId: string,
     stopReason: AcpSchema.StopReason,
-    _meta: NonNullable<AcpSchema.PromptResponse["_meta"]> | undefined = emitGeminiUsage
-      ? {
-          quota: {
-            token_count: { input_tokens: 12, output_tokens: 8 },
-            model_usage: [
-              { model: "gemini-3.5-flash", token_count: { input_tokens: 12, output_tokens: 8 } },
-            ],
-          },
-        }
-      : undefined,
+    _meta: NonNullable<AcpSchema.PromptResponse["_meta"]> | undefined = undefined,
   ) =>
     agent.client
       .sessionUpdate({
