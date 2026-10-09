@@ -679,6 +679,35 @@ it.effect("ignores worktree metadata for directories that no longer exist", () =
   ).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 
+it.effect("refreshes refs after external branch creation and rename", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      yield* driver.listRefs({ cwd, refresh: true });
+
+      // Raw Git bypasses mutation invalidation, as another terminal or agent would.
+      yield* driver.execute({
+        operation: "GitVcsDriver.test.externalBranchCreate",
+        cwd,
+        args: ["branch", "external-created"],
+      });
+      const created = yield* driver.listRefs({ cwd, refresh: true });
+      assert.isTrue(created.refs.some((ref) => ref.name === "external-created"));
+
+      yield* driver.execute({
+        operation: "GitVcsDriver.test.externalBranchRename",
+        cwd,
+        args: ["branch", "-m", "external-created", "external-renamed"],
+      });
+      const renamed = yield* driver.listRefs({ cwd, refresh: true });
+      assert.isTrue(renamed.refs.some((ref) => ref.name === "external-renamed"));
+      assert.isFalse(renamed.refs.some((ref) => ref.name === "external-created"));
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("refreshes the current branch after an external checkout", () =>
   Effect.scoped(
     Effect.gen(function* () {
