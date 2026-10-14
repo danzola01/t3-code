@@ -19,6 +19,7 @@ import {
   type UsageSummaryInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -26,10 +27,11 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1977,6 +1979,59 @@ describe("UsageService", () => {
       assert.strictEqual(ratesFetches, 2);
     }).pipe(Effect.scoped),
   );
+
+  it.live("logs pricing transport failures and keeps uncached usage available", () => {
+    const warnings: Array<ReadonlyArray<unknown>> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      const parts = Array.isArray(message) ? message : [message];
+      if (logLevel === "Warn" && parts[0] === "failed to fetch model pricing table")
+        warnings.push(parts);
+    });
+    return Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const certificateError = Object.assign(
+        new Error("self signed certificate in certificate chain"),
+        {
+          code: "SELF_SIGNED_CERT_IN_CHAIN",
+        },
+      );
+      const failures: HttpClientError.HttpClientError[] = [];
+      const httpClient = HttpClient.make((request) => {
+        const failure = new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({ request, cause: certificateError }),
+        });
+        failures.push(failure);
+        return Effect.fail(failure);
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+        Effect.provide(layerService({ prefix: "usage-service-tls-failure-test", home, settings })),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      assert.strictEqual(summary.pricing.status, "unavailable");
+      assert.strictEqual(summary.pricing.knownModels, 0);
+      assert.strictEqual(summary.buckets[0]?.unpricedRecords, 1);
+      assert.strictEqual(summary.buckets[0]?.totals.uncachedInputTokens, 10);
+      assert.strictEqual(summary.buckets[0]?.totals.outputTokens, 5);
+      const refreshed = yield* service.refreshRates;
+      assert.strictEqual(refreshed.status, "unavailable");
+      assert.strictEqual(refreshed.knownModels, 0);
+      assert.lengthOf(failures, 2);
+      assert.lengthOf(warnings, 2);
+      for (const [index, failure] of failures.entries()) {
+        const details = warnings[index]?.[1];
+        assert.isTrue(
+          typeof details === "object" &&
+            details !== null &&
+            "cause" in details &&
+            Cause.isCause(details.cause) &&
+            Cause.squash(details.cause) === failure,
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(Logger.layer([logger])));
+  });
 
   it.live("refetches a rate table inside its TTL only when the client asks", () =>
     Effect.gen(function* () {

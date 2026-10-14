@@ -68,6 +68,20 @@ export class DesktopShellEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/shell/DesktopShellEnvironment") {}
 
+// GUI launches miss shell-configured trust roots and proxies; backend children need them at startup.
+const TLS_AND_PROXY_ENV_NAMES = [
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "all_proxy",
+  "no_proxy",
+] as const;
 const LOGIN_SHELL_ENV_NAMES = [
   "PATH",
   "DBUS_SESSION_BUS_ADDRESS",
@@ -88,8 +102,14 @@ const LOGIN_SHELL_ENV_NAMES = [
   "WAYLAND_DISPLAY",
   "T3CODE_TELEMETRY_ENABLED",
   "__MISE_DIFF",
+  ...TLS_AND_PROXY_ENV_NAMES,
 ] as const;
-const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as const;
+const WINDOWS_PROFILE_ENV_NAMES = [
+  "PATH",
+  "FNM_DIR",
+  "FNM_MULTISHELL_PATH",
+  ...TLS_AND_PROXY_ENV_NAMES,
+] as const;
 const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 const FALLBACK_LC_CTYPE = "en_US.UTF-8";
 const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
@@ -391,6 +411,11 @@ const installWindowsEnvironment = Effect.fn("desktop.shellEnvironment.installWin
     if (!config.env.FNM_MULTISHELL_PATH && profile.FNM_MULTISHELL_PATH) {
       config.env.FNM_MULTISHELL_PATH = profile.FNM_MULTISHELL_PATH;
     }
+    for (const name of TLS_AND_PROXY_ENV_NAMES) {
+      if (!config.env[name] && profile[name]) {
+        config.env[name] = profile[name];
+      }
+    }
   },
 );
 
@@ -456,6 +481,7 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
       "WAYLAND_DISPLAY",
       // The telemetry opt-out is documented as a shell variable; GUI launches never see it.
       "T3CODE_TELEMETRY_ENABLED",
+      ...TLS_AND_PROXY_ENV_NAMES,
     ] as const) {
       if (!config.env[name] && shellEnvironment[name]) {
         config.env[name] = shellEnvironment[name];

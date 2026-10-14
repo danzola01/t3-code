@@ -293,7 +293,9 @@ export const make = Effect.gen(function* () {
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.json),
       Effect.timeout(10_000),
-      Effect.catchCause(() => Effect.succeed(null)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to fetch model pricing table", { cause }).pipe(Effect.as(null)),
+      ),
     );
     if (fetched === null) {
       // The refresh failed; whatever we are serving is now past its TTL and

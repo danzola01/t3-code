@@ -120,6 +120,79 @@ function runShellEnvironment(input: {
 }
 
 describe("DesktopShellEnvironment", () => {
+  it.effect.each(["darwin", "linux", "win32"] as const)(
+    "hydrates certificate and proxy settings from the shell on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+        const networkEnvironment = {
+          NODE_EXTRA_CA_CERTS: "/test/corporate-ca.crt",
+          SSL_CERT_FILE: "/test/certificates.pem",
+          SSL_CERT_DIR: "/test/certificates",
+          HTTPS_PROXY: "http://proxy.example:8443",
+          HTTP_PROXY: "http://proxy.example:8080",
+          ALL_PROXY: "socks5://proxy.example:1080",
+          NO_PROXY: "localhost,127.0.0.1,.example",
+          https_proxy: "http://proxy.example:8443",
+          http_proxy: "http://proxy.example:8080",
+          all_proxy: "socks5://proxy.example:1080",
+          no_proxy: "localhost,127.0.0.1,.example",
+        };
+
+        yield* runShellEnvironment({
+          env,
+          platform,
+          handler: (command) => {
+            if (command._tag !== "StandardCommand" || command.args.includes("-NoProfile"))
+              return envOutput({ PATH: "/usr/bin" });
+            for (const name of Object.keys(networkEnvironment)) {
+              assert.include(command.args.join(" "), name);
+            }
+            return envOutput({ PATH: "/usr/bin", ...networkEnvironment });
+          },
+        });
+
+        for (const [name, value] of Object.entries(networkEnvironment)) {
+          assert.equal(env[name], value, name);
+        }
+      }),
+  );
+
+  it.effect.each(["darwin", "linux", "win32"] as const)(
+    "preserves inherited certificate and proxy settings on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const inherited = {
+          NODE_EXTRA_CA_CERTS: "/inherited/ca.crt",
+          SSL_CERT_FILE: "/inherited/certificates.pem",
+          SSL_CERT_DIR: "/inherited/certificates",
+          HTTPS_PROXY: "http://inherited.example:8443",
+          HTTP_PROXY: "http://inherited.example:8080",
+          ALL_PROXY: "socks5://inherited.example:1080",
+          NO_PROXY: "localhost",
+          https_proxy: "http://inherited.example:8443",
+          http_proxy: "http://inherited.example:8080",
+          all_proxy: "socks5://inherited.example:1080",
+          no_proxy: "localhost",
+        };
+        const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin", ...inherited };
+
+        yield* runShellEnvironment({
+          env,
+          platform,
+          handler: () =>
+            envOutput({
+              PATH: "/usr/bin",
+              ...Object.fromEntries(Object.keys(inherited).map((name) => [name, "shell-value"])),
+            }),
+        });
+
+        for (const [name, value] of Object.entries(inherited)) {
+          assert.equal(env[name], value, name);
+        }
+      }),
+  );
+
   it.effect("rejects PATH output from a failed shell and tries the next candidate", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/failing", PATH: "/usr/bin" };
