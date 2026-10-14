@@ -108,6 +108,7 @@ export function GitBranchesSheet(_props: GitBranchesSheetProps) {
       ) : null}
       <MaterialScreenContent fitToContents>
         <ScrollView
+          nestedScrollEnabled
           className="android:shrink android:grow-0 ios:flex-1"
           refreshControl={
             <RefreshControl refreshing={isRefreshingBranches} onRefresh={refreshBranches} />

@@ -42,6 +42,11 @@ export const PROVIDER_PRESENTATION = {
     driverKind: ProviderDriverKind.make("antigravity"),
   },
   gemini: { label: "Gemini", color: "#4285f4", driverKind: ProviderDriverKind.make("gemini") },
+  pi: {
+    label: "Pi",
+    color: "#4d9f8a",
+    driverKind: ProviderDriverKind.make("pi"),
+  },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
 /** Stable provider reading order across charts, summaries, tables, and hover rows. */

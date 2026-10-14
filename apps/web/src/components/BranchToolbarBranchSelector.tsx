@@ -123,6 +123,11 @@ export function BranchToolbarBranchSelector({
     "thread metadata update",
   );
   const refreshRefs = useAtomCommand(vcsEnvironment.refreshRefs, { reportFailure: false });
+  // An automatic default loses to any launch that lands first; that rejection is expected.
+  const updateEmptyThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
+
   const switchRef = useAtomCommand(vcsEnvironment.switchRef, {
     reportFailure: false,
   });
@@ -189,12 +194,14 @@ export function BranchToolbarBranchSelector({
         });
       }
       if (hasServerThread) {
-        void updateThreadMetadata({
+        void (automatic ? updateEmptyThreadMetadata : updateThreadMetadata)({
           environmentId,
           input: {
             threadId: activeThreadId,
             branch,
             worktreePath,
+            // A launched thread records its own worktree; a late default must not reset it.
+            ...(automatic ? { expectedEmpty: true } : {}),
           },
         });
       }
@@ -229,6 +236,7 @@ export function BranchToolbarBranchSelector({
       effectiveEnvMode,
       draftThread?.environmentSelection,
       stopThreadSession,
+      updateEmptyThreadMetadata,
       updateThreadMetadata,
     ],
   );
@@ -539,8 +547,13 @@ export function BranchToolbarBranchSelector({
     ? null
     : (defaultBranchName ?? currentGitBranch);
 
+  // A started thread's server is creating its worktree and records the branch
+  // itself; defaulting it here would reset the thread to the base checkout and
+  // detach the agent that just started.
+  const threadStarted = serverSession !== null;
   useEffect(() => {
     if (
+      threadStarted ||
       effectiveEnvMode !== "worktree" ||
       activeWorktreePath ||
       activeThreadBranch ||
@@ -554,6 +567,7 @@ export function BranchToolbarBranchSelector({
     activeWorktreePath,
     effectiveEnvMode,
     setThreadBranch,
+    threadStarted,
     worktreeBaseBranchCandidate,
   ]);
 
@@ -807,7 +821,11 @@ export function BranchToolbarBranchSelector({
               )}
             />
             <ComposerContextLabel displayMode={displayMode}>
-              <MiddleTruncate value={triggerLabel} className="w-full" />
+              <MiddleTruncate
+                value={triggerLabel}
+                variant={displayMode === "panel" ? "cap-aligned" : "default"}
+                className="w-full"
+              />
             </ComposerContextLabel>
             {displayMode !== "panel" ? (
               <ChevronDownIcon className="size-3 shrink-0 opacity-50" />

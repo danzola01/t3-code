@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { CustomModelSetting } from "./model.ts";
 import { TrimmedString } from "./baseSchemas.ts";
 import { makeBinaryPathSetting, makeProviderSettingsSchema } from "./settings.ts";
 
@@ -60,7 +61,7 @@ export const GeminiSettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    customModels: Schema.Array(Schema.String).pipe(
+    customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),

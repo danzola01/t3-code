@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
-import { parseGeminiRecord } from "./usageTranscripts.ts";
+import { parseGeminiRecord, geminiUsageFormat } from "@t3tools/provider-gemini/server/usage";
 import { listTranscriptFiles, readTranscriptRecords } from "./usageTranscriptReader.ts";
 import { decodeScanCache, dedupeWithinFile, encodeScanCache } from "./usageScanCache.ts";
 import {
@@ -60,8 +60,8 @@ describe("Gemini native usage", () => {
       JSON.stringify({ sessionId: "native-session", messages: [message()] }, null, 2),
     );
     await NodeFSP.writeFile(current, line({ sessionId: "native-session" }) + line(message()));
-    const old = await readTranscriptRecords(legacy, "gemini");
-    const fresh = await readTranscriptRecords(current, "gemini", undefined, {
+    const old = await readTranscriptRecords(legacy, geminiUsageFormat);
+    const fresh = await readTranscriptRecords(current, geminiUsageFormat, undefined, {
       streamingThresholdBytes: 16,
     });
     expect(old?.records).toEqual(fresh?.records);
@@ -72,7 +72,7 @@ describe("Gemini native usage", () => {
   it("resumes appends with native session identity and replaces repeated message snapshots", async () => {
     const file = NodePath.join(dir, "session.jsonl");
     await NodeFSP.writeFile(file, line({ sessionId: "native-session" }) + line(message()));
-    const first = await readTranscriptRecords(file, "gemini");
+    const first = await readTranscriptRecords(file, geminiUsageFormat);
     expect(first).not.toBeNull();
     const saved = decodeScanCache(
       encodeScanCache(
@@ -90,18 +90,60 @@ describe("Gemini native usage", () => {
           ],
         ]),
       ),
+      new Map([["gemini", geminiUsageFormat]]),
     );
-    expect(saved.get(file)?.position.geminiSessionId).toBe("native-session");
+    expect(saved.get(file)?.position.state).toEqual({ sessionId: "native-session" });
     await NodeFSP.appendFile(
       file,
       line(message("response-one", 80)) + line(message("response-two")),
     );
-    const appended = await readTranscriptRecords(file, "gemini", saved.get(file)?.position);
+    const appended = await readTranscriptRecords(
+      file,
+      geminiUsageFormat,
+      saved.get(file)?.position,
+    );
     expect(appended?.resumed).toBe(true);
     const records = dedupeWithinFile([...first!.records, ...appended!.records]);
     expect(records).toHaveLength(2);
     expect(records.every((record) => record.sessionId === "native-session")).toBe(true);
     expect(records[0]?.totals.outputTokens).toBe(100);
+  });
+
+  it("retains historical records from the previous fork cache layout", async () => {
+    const file = NodePath.join(dir, "session.jsonl");
+    await NodeFSP.writeFile(file, line({ sessionId: "native-session" }) + line(message()));
+    const first = await readTranscriptRecords(file, geminiUsageFormat);
+    expect(first).not.toBeNull();
+    const current = encodeScanCache(
+      new Map([
+        [
+          file,
+          {
+            provider: "gemini",
+            size: (await NodeFSP.stat(file)).size,
+            mtimeMs: 1,
+            records: first!.records,
+            tailRecords: first!.tailRecords,
+            position: first!.position,
+          },
+        ],
+      ]),
+    );
+    const previous = {
+      ...current,
+      files: { [file]: { ...current.files[file]!, cs: null, gs: "native-session" } },
+    };
+    const saved = decodeScanCache(previous, new Map([["gemini", geminiUsageFormat]]));
+    expect(saved.get(file)?.records).toEqual(first!.records);
+    await NodeFSP.appendFile(file, line(message("response-two")));
+    const refreshed = await readTranscriptRecords(
+      file,
+      geminiUsageFormat,
+      saved.get(file)?.position,
+    );
+    expect(refreshed?.resumed).toBe(false);
+    expect(refreshed?.records).toHaveLength(2);
+    expect(refreshed?.records.every((record) => record.sessionId === "native-session")).toBe(true);
   });
 
   it("handles partial tails, rewinds, and metadata snapshots without losing consumed usage", async () => {
@@ -111,14 +153,14 @@ describe("Gemini native usage", () => {
       file,
       line({ sessionId: "session" }) + line(message()) + tail.slice(0, -12),
     );
-    const first = await readTranscriptRecords(file, "gemini");
+    const first = await readTranscriptRecords(file, geminiUsageFormat);
     expect(first?.records).toHaveLength(1);
     expect(first?.tailRecords).toHaveLength(0);
     await NodeFSP.appendFile(file, tail.slice(-12) + line({ $set: { messages: [message()] } }));
-    const appended = await readTranscriptRecords(file, "gemini", first!.position);
+    const appended = await readTranscriptRecords(file, geminiUsageFormat, first!.position);
     expect(dedupeWithinFile([...first!.records, ...appended!.records])).toHaveLength(2);
     await NodeFSP.writeFile(file, line({ sessionId: "replaced" }) + line(message("replacement")));
-    const replaced = await readTranscriptRecords(file, "gemini", appended!.position);
+    const replaced = await readTranscriptRecords(file, geminiUsageFormat, appended!.position);
     expect(replaced?.resumed).toBe(false);
     expect(replaced?.records[0]?.sessionId).toBe("replaced");
   });
@@ -136,7 +178,7 @@ describe("Gemini native usage", () => {
       await NodeFSP.writeFile(file, line(message()));
     }
     expect(
-      (await listTranscriptFiles(dir, 0, { gemini: true }))
+      (await listTranscriptFiles(dir, 0, { acceptsFile: geminiUsageFormat.acceptsFile })).files
         .map((file) => NodePath.relative(dir, file.path))
         .sort(),
     ).toEqual([

@@ -17,6 +17,7 @@ import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
 
+vi.mock("../hooks/useFileMetadata", () => ({ useFileMetadata: () => null }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("./chat/MermaidDiagram", () => ({
   // Real Mermaid needs layout APIs jsdom lacks; a rendered diagram is an SVG.
@@ -790,6 +791,36 @@ describe("ChatMarkdown file option chips", () => {
   });
 });
 
+describe("ChatMarkdown Codex follow-up suggestions", () => {
+  it.each([true, false])("renders the label with parseRawHtml=%s", (parseRawHtml) => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={
+          'Done.\n\n- :codex-followup[Prepare print version]{prompt="Prepare the document for printing."}'
+        }
+        lineBreaks={!parseRawHtml}
+        parseRawHtml={parseRawHtml}
+      />,
+    );
+
+    expect(html).toContain("Prepare print version");
+    expect(html).not.toContain("codex-followup");
+    expect(html).not.toContain("Prepare the document for printing.");
+  });
+
+  it("keeps the label of a malformed follow-up created by over-indented list recovery", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="-       Next :codex-followup[Prepare print version]"
+      />,
+    );
+
+    expect(html).toContain("<li>Next :codex-followup[Prepare print version]</li>");
+  });
+});
+
 const ARTIFACT_TEMPLATE_DIRECTIVE =
   '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
 
@@ -871,15 +902,15 @@ describe("ChatMarkdown heading levels", () => {
       />,
     );
 
-    expect(html).toContain('<h1 aria-level="4">Top</h1>');
-    expect(html).toContain('<h2 aria-level="5">Section</h2>');
-    expect(html).toContain('<h6 aria-level="6">Fine print</h6>');
+    expect(html).toContain('<h1 id="user-content-top" aria-level="4">Top</h1>');
+    expect(html).toContain('<h2 id="user-content-section" aria-level="5">Section</h2>');
+    expect(html).toContain('<h6 id="user-content-fine-print" aria-level="6">Fine print</h6>');
   });
 
   it("leaves heading levels alone when the markdown is not nested", () => {
     const html = renderToStaticMarkup(<ChatMarkdown cwd="/tmp/project" text="# Top" />);
 
-    expect(html).toContain("<h1>Top</h1>");
+    expect(html).toContain('<h1 id="user-content-top">Top</h1>');
   });
 });
 
@@ -1272,3 +1303,77 @@ it.each([
     }
   },
 );
+
+describe("ChatMarkdown heading ids", () => {
+  it("never gives two headings the same id, even when a suffix matches another heading", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        parseRawHtml
+        text={
+          '## Setup\n\n## Setup\n\n## Setup-1\n\n<h2 id="install-1">Pinned</h2>\n\n## Install\n\n## Install'
+        }
+      />,
+    );
+    const ids = [...html.matchAll(/<h2 id="([^"]+)"/g)].map((match) => match[1]);
+    expect(ids).toEqual([
+      "user-content-setup",
+      "user-content-setup-1",
+      "user-content-setup-1-1",
+      "user-content-install-1",
+      "user-content-install",
+      "user-content-install-2",
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("ChatMarkdown in-page links", () => {
+  it.each([true, false])(
+    "scrolls a table-of-contents link to its heading without touching the URL (parseRawHtml=%s)",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      const { createRoot } = await import("react-dom/client");
+      const container = document.createElement("div");
+      document.body.append(container);
+      const root = createRoot(container);
+      window.history.replaceState(null, "", "/#/env/thread");
+      const scrollIntoView = vi.fn();
+      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      try {
+        await act(async () => {
+          root.render(
+            <ChatMarkdown
+              cwd="/tmp/project"
+              parseRawHtml={parseRawHtml}
+              text={
+                "- [Operating model](#1-operating-model)\n- [Missing](#nowhere)\n\n## 1. Operating model\n\n## 1. Operating model"
+              }
+            />,
+          );
+        });
+        const headings = [...container.querySelectorAll("h2")];
+        expect(headings.map((heading) => heading.id)).toEqual([
+          "user-content-1-operating-model",
+          "user-content-1-operating-model-1",
+        ]);
+
+        const [tocLink, missingLink] = [...container.querySelectorAll("a")];
+        const click = () => new MouseEvent("click", { bubbles: true, cancelable: true });
+        const tocClick = click();
+        tocLink!.dispatchEvent(tocClick);
+        expect(tocClick.defaultPrevented).toBe(true);
+        expect(scrollIntoView.mock.contexts).toEqual([headings[0]]);
+
+        const missingClick = click();
+        missingLink!.dispatchEvent(missingClick);
+        expect(missingClick.defaultPrevented).toBe(true);
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        expect(window.location.hash).toBe("#/env/thread");
+      } finally {
+        await act(async () => root.unmount());
+        container.remove();
+      }
+    },
+  );
+});
