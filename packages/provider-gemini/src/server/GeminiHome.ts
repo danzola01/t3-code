@@ -42,6 +42,18 @@ export const resolveGeminiConfigDir = Effect.fn("resolveGeminiConfigDir")(functi
   return path.join(homeRoot, ".gemini");
 });
 
+/** Gemini 0.64 keeps Seatbelt runtime files outside the config directory. */
+export const resolveGeminiRuntimeDir = Effect.fn("resolveGeminiRuntimeDir")(function* (
+  config: Pick<GeminiSettings, "homePath">,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const path = yield* Path.Path;
+  const configDir = yield* resolveGeminiConfigDir(config, environment);
+  return environment.SANDBOX === "sandbox-exec"
+    ? path.join(path.dirname(configDir), ".cache", ".gemini")
+    : configDir;
+});
+
 export const readGeminiSelectedAuthMethod = Effect.fn("readGeminiSelectedAuthMethod")(function* (
   config: Pick<GeminiSettings, "homePath">,
   environment: NodeJS.ProcessEnv = process.env,
@@ -61,6 +73,7 @@ export const readGeminiDiscoverySettings = Effect.fn("readGeminiDiscoverySetting
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const configDir = yield* resolveGeminiConfigDir(config, environment);
+  const runtimeDir = yield* resolveGeminiRuntimeDir(config, environment);
   const platform = yield* HostProcess.Platform;
   const systemPath =
     environment.GEMINI_CLI_SYSTEM_SETTINGS_PATH ||
@@ -87,7 +100,7 @@ export const readGeminiDiscoverySettings = Effect.fn("readGeminiDiscoverySetting
   );
   const workspaceTrusted =
     cwd !== undefined &&
-    (yield* isGeminiWorkspaceTrusted(configDir, cwd, environment, folderTrustEnabled));
+    (yield* isGeminiWorkspaceTrusted(runtimeDir, configDir, cwd, environment, folderTrustEnabled));
   if (cwd && workspaceTrusted && path.resolve(cwd) !== path.dirname(configDir)) {
     layers.splice(2, 0, yield* readSettings(path.join(cwd, ".gemini", "settings.json")));
   }
@@ -109,6 +122,7 @@ const decodeTrustedFolders = Schema.decodeUnknownOption(
 );
 
 const isGeminiWorkspaceTrusted = Effect.fn("isGeminiWorkspaceTrusted")(function* (
+  runtimeDir: string,
   configDir: string,
   cwd: string,
   environment: NodeJS.ProcessEnv,
@@ -122,11 +136,18 @@ const isGeminiWorkspaceTrusted = Effect.fn("isGeminiWorkspaceTrusted")(function*
   if (environment.GEMINI_CLI_TRUST_WORKSPACE === "true" || !enabled) return true;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const explicitPath = environment.GEMINI_CLI_TRUSTED_FOLDERS_PATH;
   const contents = yield* fs
-    .readFileString(
-      environment.GEMINI_CLI_TRUSTED_FOLDERS_PATH || path.join(configDir, "trustedFolders.json"),
-    )
-    .pipe(Effect.orElseSucceed(() => "{}"));
+    .readFileString(explicitPath || path.join(runtimeDir, "trustedFolders.json"))
+    .pipe(
+      Effect.catchTags({
+        PlatformError: (error) =>
+          !explicitPath && runtimeDir !== configDir && error.reason._tag === "NotFound"
+            ? fs.readFileString(path.join(configDir, "trustedFolders.json"))
+            : Effect.fail(error),
+      }),
+      Effect.orElseSucceed(() => "{}"),
+    );
   const rules = Option.getOrUndefined(decodeTrustedFolders(contents));
   if (!rules) return false;
   const location = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => path.resolve(cwd)));

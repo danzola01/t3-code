@@ -284,7 +284,7 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
         status: "error",
         auth: { status: "unknown" },
         message:
-          "Gemini CLI is installed but ACP initialization failed. Verify the configured executable supports --acp (tested with 0.59.0). Run it from the project's terminal to see its startup diagnostic.",
+          "Gemini CLI is installed but ACP initialization failed. Verify the configured executable supports --acp (tested with 0.59.0 through 0.64.0). Run it from the project's terminal to see its startup diagnostic.",
       },
     });
   }

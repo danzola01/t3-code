@@ -29,6 +29,8 @@ import {
   type ProviderAdapterV2TurnInput,
   type ProviderAdapterV2Event,
 } from "@t3tools/provider-core/server/ProviderAdapter";
+import { parseSessionUpdateEvent } from "@t3tools/provider-acp/server/runtimeModel";
+import type * as Acp from "effect-acp/compat";
 import { makeGeminiAdapter, normalizeGeminiMcpToolCall } from "./GeminiAdapter.ts";
 function makeTurnInput(input: {
   readonly threadId: ThreadId;
@@ -172,6 +174,55 @@ it.layer(layer)("GeminiAdapter V2", (it) => {
 });
 
 describe("Gemini tool normalization", () => {
+  // 0.64 ACP emits display text, not the MCP server identity or raw arguments.
+  it.each(["Search(query: T3)", "printf T3"])(
+    "preserves the 0.64 generic tool card for %s without inventing MCP metadata",
+    (title) => {
+      const update: Acp.SessionNotification = {
+        sessionId: "native-session",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "call-search",
+          status: "pending",
+          kind: "other",
+          title,
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: "Search for the requested project" },
+            },
+          ],
+        },
+      };
+      const started = parseSessionUpdateEvent(update).events.find(
+        (event) => event._tag === "ToolCallUpdated",
+      );
+      assert.isDefined(started);
+      if (started?._tag !== "ToolCallUpdated") throw new Error("Expected tool event");
+      const pending = normalizeGeminiMcpToolCall(started.toolCall);
+      assert.equal(pending.title, title);
+      assert.isUndefined(pending.data.item);
+      const completed = parseSessionUpdateEvent({
+        ...update,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-search",
+          title,
+          status: "completed",
+          content: [{ type: "content", content: { type: "text", text: "Found T3" } }],
+        },
+      }).events.find((event) => event._tag === "ToolCallUpdated");
+      assert.isDefined(completed);
+      if (completed?._tag !== "ToolCallUpdated") throw new Error("Expected tool event");
+      const terminal = normalizeGeminiMcpToolCall(completed.toolCall);
+      assert.equal(terminal.status, "completed");
+      assert.equal(terminal.title, title);
+      assert.deepEqual(terminal.data.content, [
+        { type: "content", content: { type: "text", text: "Found T3" } },
+      ]);
+      assert.isUndefined(terminal.data.item);
+    },
+  );
   it("keeps MCP arguments when a terminal update replaces tool content", () => {
     const call = normalizeGeminiMcpToolCall({
       toolCallId: "tool-1",

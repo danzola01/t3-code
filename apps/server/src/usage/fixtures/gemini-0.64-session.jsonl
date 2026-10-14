@@ -1,0 +1,9 @@
+{"sessionId":"gemini-064-fixture","projectHash":"fixture-project","startTime":"2026-10-08T12:00:00Z","lastUpdated":"2026-10-08T12:00:00Z","kind":"main"}
+{"id":"user-one","type":"user","timestamp":"2026-10-08T12:00:00Z","content":[{"text":"Search the fixture"}]}
+{"id":"response-one","type":"gemini","timestamp":"2026-10-08T12:00:01Z","content":[],"model":"gemini-2.5-pro","tokens":null,"toolCalls":[{"id":"call-one","name":"fixture_echo","args":{"text":"fixture"},"status":"executing"}]}
+{"id":"response-one","type":"gemini","timestamp":"2026-10-08T12:00:01Z","content":[],"model":"gemini-2.5-pro","tokens":{"input":100,"cached":40,"output":30,"thoughts":20,"tool":10,"total":160},"toolCalls":[{"id":"call-one","name":"fixture_echo","args":{"text":"fixture"},"status":"success","result":[{"text":"fixture"}]}]}
+{"$patch":{"updates":[{"id":"response-one","toolCalls":[{"id":"call-one","result":[{"text":"updated fixture"}]}]}],"orderIds":["user-one","response-one"]}}
+{"$set":{"lastUpdated":"2026-10-08T12:00:02Z"}}
+{"id":"response-two","type":"gemini","timestamp":"2026-10-08T12:00:03Z","content":[{"text":"Done"}],"model":"gemini-2.5-pro","tokens":{"input":200,"cached":100,"output":40,"thoughts":10,"tool":0,"total":250}}
+{"$rewindTo":"response-two"}
+{"$patch":{"removeIds":["response-one"],"orderIds":["user-one"]}}

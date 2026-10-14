@@ -75,6 +75,58 @@ it.layer(NodeServices.layer)("Gemini settings compatibility", (it) => {
   );
 
   it.effect(
+    "reads 0.64 sandbox trust from the runtime directory while retaining config settings",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.write(
+          "home/.gemini/settings.json",
+          '{"security":{"auth":{"selectedType":"oauth-personal"}},"skills":{"disabled":["user"]}}',
+        );
+        yield* f.write(
+          "home/.cache/.gemini/trustedFolders.json",
+          encodeJson({ [f.cwd]: "TRUST_FOLDER" }),
+        );
+        yield* f.write("project/.gemini/settings.json", '{"skills":{"disabled":["project"]}}');
+        const settings = yield* readGeminiDiscoverySettings(
+          { homePath: f.home },
+          { ...f.environment, SANDBOX: "sandbox-exec" },
+          f.cwd,
+        );
+        assert.equal(settings.selectedAuthMethod, "oauth-personal");
+        assert.isTrue(settings.workspaceTrusted);
+        assert.sameMembers([...settings.disabledSkills], ["user", "project"]);
+      }),
+  );
+
+  it.effect("falls back to legacy sandbox trust only when the new trust file is absent", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.write("home/.gemini/trustedFolders.json", encodeJson({ [f.cwd]: "TRUST_FOLDER" }));
+      const environment = { ...f.environment, SANDBOX: "sandbox-exec" };
+      assert.isTrue(
+        (yield* readGeminiDiscoverySettings({ homePath: f.home }, environment, f.cwd))
+          .workspaceTrusted,
+      );
+      yield* f.write("home/.cache/.gemini/trustedFolders.json", "{}");
+      assert.isFalse(
+        (yield* readGeminiDiscoverySettings({ homePath: f.home }, environment, f.cwd))
+          .workspaceTrusted,
+      );
+      assert.isTrue(
+        (yield* readGeminiDiscoverySettings(
+          { homePath: f.home },
+          {
+            ...environment,
+            GEMINI_CLI_TRUSTED_FOLDERS_PATH: f.path.join(f.home, ".gemini", "trustedFolders.json"),
+          },
+          f.cwd,
+        )).workspaceTrusted,
+      );
+    }),
+  );
+
+  it.effect(
     "ignores workspace auth, skills and commands when untrusted, including explicit restrictions",
     () =>
       Effect.gen(function* () {

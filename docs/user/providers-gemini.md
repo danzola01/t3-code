@@ -7,6 +7,8 @@ workflow scripts.
 
 ## Before You Add The Provider
 
+Gemini CLI 0.59.0 through 0.64.0 have compatibility coverage. Prefer 0.64.0 for improved saved-session lookup.
+
 Install Gemini CLI on the machine running the T3 Code environment, then start `gemini` once in a
 terminal and complete your company's approved sign-in flow. T3 Code uses Gemini CLI's existing
 credentials; it does not ask for or store a Google credential itself.
@@ -56,8 +58,11 @@ Gemini's own MCP configuration continues to work normally. T3 Code also attaches
 server over ACP, so Gemini can use T3 Code tools without writing credentials or endpoints into the
 project.
 
-Gemini MCP activity rows show the server, tool arguments, and a compact result preview. Large MCP
-responses stay summarized when a thread is sent to another client.
+Gemini MCP activity rows show the server, tool arguments, and a compact result preview when the
+CLI supplies those details. Gemini CLI 0.64.0 sends some MCP calls as display text without the
+server identity or structured arguments; these appear as ordinary tool activity with Gemini's
+title and result. MCP execution and approvals still work. Large responses stay summarized when
+a thread is sent to another client.
 
 Gemini CLI 0.59.0 does not expose the interactive `/mcp` commands over ACP. T3 Code explains this
 when you enter `/mcp list` rather than asking the model to invent a status report. Run

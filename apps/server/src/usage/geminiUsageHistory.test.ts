@@ -188,6 +188,53 @@ describe("Gemini native usage", () => {
     ]);
   });
 
+  it("keeps consumed 0.64 usage through content patches, removals and rewinds", async () => {
+    // Source format: Gemini v0.64.0 ChatRecordingService and chatRecordingTypes.
+    const native = await NodeFSP.readFile(
+      new URL("./fixtures/gemini-0.64-session.jsonl", import.meta.url),
+      "utf8",
+    );
+    const file = NodePath.join(dir, "session.jsonl");
+    const split = native.indexOf('{"$patch"');
+    await NodeFSP.writeFile(file, native.slice(0, split));
+    const initial = await readTranscriptRecords(file, geminiUsageFormat);
+    expect(initial).not.toBeNull();
+    await NodeFSP.appendFile(file, native.slice(split));
+    const appended = await readTranscriptRecords(file, geminiUsageFormat, initial!.position, {
+      streamingThresholdBytes: 16,
+    });
+    expect(appended?.resumed).toBe(true);
+    const incremental = dedupeWithinFile([...initial!.records, ...appended!.records]);
+    const cold = await readTranscriptRecords(file, geminiUsageFormat, undefined, {
+      streamingThresholdBytes: 16,
+    });
+    expect(incremental).toEqual(dedupeWithinFile(cold!.records));
+    expect(
+      incremental.map((record) => ({ sessionId: record.sessionId, totals: record.totals })),
+    ).toEqual([
+      {
+        sessionId: "gemini-064-fixture",
+        totals: {
+          uncachedInputTokens: 70,
+          cachedInputTokens: 40,
+          cacheCreationTokens: 0,
+          outputTokens: 50,
+          reasoningTokens: 20,
+        },
+      },
+      {
+        sessionId: "gemini-064-fixture",
+        totals: {
+          uncachedInputTokens: 100,
+          cachedInputTokens: 100,
+          cacheCreationTokens: 0,
+          outputTokens: 50,
+          reasoningTokens: 10,
+        },
+      },
+    ]);
+  });
+
   it("uses per-response long-context rates at the 200k boundary and respects overrides", () => {
     const rates = parseRateTable({
       "gemini-2.5-pro": {

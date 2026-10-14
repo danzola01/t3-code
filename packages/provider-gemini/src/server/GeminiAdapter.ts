@@ -82,6 +82,8 @@ export function normalizeGeminiMcpToolCall(
   toolCall: AcpToolCallState,
   rememberedArguments?: unknown,
 ): AcpToolCallState {
+  // 0.64 titles are display signatures or raw commands; they cannot reliably
+  // identify an MCP server or reconstruct arguments. Preserve generic ACP cards.
   const identity = parseGeminiMcpToolTitle(toolCall.title);
   if (!identity) {
     return toolCall;

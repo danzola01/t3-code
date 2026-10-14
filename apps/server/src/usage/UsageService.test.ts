@@ -1062,13 +1062,20 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live(
-    "reports Gemini costs from disabled instances and resumes history updates without double counting",
-    () =>
+  it.live.each([false, true])(
+    "reports Gemini costs once from disabled instances with sandbox=%s and resumes updates",
+    (sandbox) =>
       Effect.gen(function* () {
         const { settings, home } = yield* setup;
         const geminiHome = NodePath.join(home, "gemini-work");
-        const directory = NodePath.join(geminiHome, ".gemini", "tmp", "project", "chats");
+        const directory = NodePath.join(
+          geminiHome,
+          ...(sandbox ? [".cache"] : []),
+          ".gemini",
+          "tmp",
+          "project",
+          "chats",
+        );
         const file = NodePath.join(directory, "session-main.jsonl");
         const response = (output: number) =>
           encodeUnknownJsonString({
@@ -1086,6 +1093,7 @@ describe("UsageService", () => {
           Effect.provide(
             layerService({
               prefix: "usage-service-gemini",
+              environment: sandbox ? { SANDBOX: "sandbox-exec" } : {},
               home,
               settings: {
                 ...settings,
@@ -1122,7 +1130,9 @@ describe("UsageService", () => {
         });
         assert.closeTo(bucket?.costUsd ?? 0, 0.000164, 1e-10);
         assert.equal(
-          first.sources.filter((source) => source.fingerprint.provider === "gemini").length,
+          first.sources.filter(
+            (source) => source.fingerprint.provider === "gemini" && source.status !== "missing",
+          ).length,
           1,
         );
         yield* Effect.promise(() => NodeFSP.appendFile(file, response(80)));
@@ -1134,7 +1144,6 @@ describe("UsageService", () => {
         assert.deepEqual(warm.buckets, updated.buckets);
       }).pipe(Effect.scoped),
   );
-
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

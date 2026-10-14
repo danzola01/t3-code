@@ -11,7 +11,7 @@ import {
   type TranscriptUsageFormat,
   type UsageRecord,
 } from "@t3tools/provider-core/server/usage";
-import { resolveGeminiConfigDir } from "./GeminiHome.ts";
+import { resolveGeminiConfigDir, resolveGeminiRuntimeDir } from "./GeminiHome.ts";
 
 /** Native Gemini message snapshots; repeated IDs replace earlier token snapshots. */
 export function parseGeminiRecord(value: unknown, sessionId: string): readonly UsageRecord[] {
@@ -103,10 +103,11 @@ export const geminiUsageReader: ProviderUsageReader<GeminiSettings, Path.Path> =
   directories: Effect.fn("geminiUsageReader.directories")(function* (instance) {
     if (!instance.config || !instance.configured) return [];
     const path = yield* Path.Path;
-    return [
-      {
-        dir: path.join(yield* resolveGeminiConfigDir(instance.config, instance.environment), "tmp"),
-      },
-    ];
+    const runtimeDir = yield* resolveGeminiRuntimeDir(instance.config, instance.environment);
+    const configDir = yield* resolveGeminiConfigDir(instance.config, instance.environment);
+    // Older CLI versions kept history in the config directory, including under Seatbelt.
+    return [...new Set([runtimeDir, configDir])].map((directory) => ({
+      dir: path.join(directory, "tmp"),
+    }));
   }),
 };
