@@ -1,6 +1,8 @@
 import {
   DesktopServerExposureModeSchema,
   DesktopUpdateChannelSchema,
+  DesktopForkSettingsSchema,
+  type DesktopForkSettings,
   type DesktopServerExposureMode,
   type DesktopUpdateChannel,
 } from "@t3tools/contracts";
@@ -26,6 +28,7 @@ import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
+  readonly forkAppearance: DesktopForkSettings;
   readonly localEnvironmentEnabled: boolean;
   readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
@@ -75,6 +78,7 @@ export const DEFAULT_MAIN_WINDOW_SIZE = {
 } as const;
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
+  forkAppearance: { stealthEnabled: false, stealthIcon: "terminal" },
   localEnvironmentEnabled: true,
   linuxPasswordStore: DEFAULT_LINUX_PASSWORD_STORE,
   mainWindowBounds: null,
@@ -97,6 +101,7 @@ const DesktopWindowBoundsDocument = Schema.Struct({
 });
 
 const DesktopSettingsDocument = Schema.Struct({
+  forkAppearance: Schema.optionalKey(Schema.Unknown),
   localEnvironmentEnabled: Schema.optionalKey(Schema.Boolean),
   linuxPasswordStore: Schema.optionalKey(Schema.Unknown),
   mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
@@ -123,6 +128,7 @@ const decodeDesktopSettingsJson = Schema.decodeEffect(DesktopSettingsJson);
 const encodeDesktopSettingsJson = Schema.encodeEffect(DesktopSettingsJson);
 const decodeDesktopWindowBounds = Schema.decodeUnknownOption(DesktopWindowBoundsSchema);
 const desktopWindowBoundsEquivalence = Schema.toEquivalence(DesktopWindowBoundsSchema);
+const decodeForkSettings = Schema.decodeUnknownOption(DesktopForkSettingsSchema);
 
 const settingsChange = (settings: DesktopSettings, changed: boolean): DesktopSettingsChange => ({
   settings,
@@ -157,6 +163,9 @@ export class DesktopAppSettings extends Context.Service<
   {
     readonly load: Effect.Effect<DesktopSettings>;
     readonly get: Effect.Effect<DesktopSettings>;
+    readonly setForkAppearance: (
+      settings: DesktopForkSettings,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setLocalEnvironmentEnabled: (
       enabled: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
@@ -233,6 +242,10 @@ function normalizeDesktopSettingsDocument(
 
   return {
     localEnvironmentEnabled: parsed.localEnvironmentEnabled !== false,
+    forkAppearance: Option.getOrElse(
+      decodeForkSettings(parsed.forkAppearance),
+      () => defaultSettings.forkAppearance,
+    ),
     linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
     mainWindowMaximized: mainWindowBounds !== null && parsed.mainWindowMaximized === true,
@@ -255,6 +268,13 @@ function toDesktopSettingsDocument(
   defaults: DesktopSettings,
 ): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
+
+  if (
+    settings.forkAppearance.stealthEnabled !== defaults.forkAppearance.stealthEnabled ||
+    settings.forkAppearance.stealthIcon !== defaults.forkAppearance.stealthIcon
+  ) {
+    document.forkAppearance = settings.forkAppearance;
+  }
 
   if (settings.localEnvironmentEnabled !== defaults.localEnvironmentEnabled) {
     document.localEnvironmentEnabled = settings.localEnvironmentEnabled;
@@ -307,6 +327,13 @@ function setServerExposureMode(
         ...settings,
         serverExposureMode: requestedMode,
       };
+}
+
+function setForkAppearance(settings: DesktopSettings, value: DesktopForkSettings): DesktopSettings {
+  return settings.forkAppearance.stealthEnabled === value.stealthEnabled &&
+    settings.forkAppearance.stealthIcon === value.stealthIcon
+    ? settings
+    : { ...settings, forkAppearance: value };
 }
 
 function setMainWindowBounds(
@@ -529,6 +556,7 @@ export const make = Effect.gen(function* () {
     });
 
   return DesktopAppSettings.of({
+    setForkAppearance: (value) => persist((settings) => setForkAppearance(settings, value)),
     get: SynchronizedRef.get(settingsRef),
     load: Effect.gen(function* () {
       const settings = yield* readSettings(
@@ -609,6 +637,7 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
         });
 
       return DesktopAppSettings.of({
+        setForkAppearance: (value) => update((settings) => setForkAppearance(settings, value)),
         get: SynchronizedRef.get(settingsRef),
         load: SynchronizedRef.get(settingsRef),
         setMainWindowBounds: (bounds, isMaximized) =>

@@ -92,6 +92,17 @@ terminal, open **Settings → General → About** and choose **Install** next to
 terminal afterwards. **Remove** takes it off again. If you already have `t3`
 from npm, it stays as it is.
 
+### Dock appearance on macOS
+
+Open **Settings → Fork settings** to enable **Stealth mode** and choose a
+Terminal or VS Code Dock icon. Changes apply immediately and survive restarts. VS Code must
+be installed in `/Applications` or your user’s `Applications` folder. Turn stealth mode off
+to restore the T3 Code icon.
+
+This changes the running Dock icon only. The app name, Finder icon, notifications, and
+process identity remain T3 Code. The setting applies to this Mac even when connected to
+a remote environment.
+
 ### Windows Subsystem for Linux
 
 Choose a WSL distro in **Settings → Connections** to run agents and projects

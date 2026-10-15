@@ -18,6 +18,7 @@ export type SettingsPath =
   | "/settings/general"
   | "/settings/diagnostics"
   | "/settings/appearance"
+  | "/settings/fork"
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
@@ -97,6 +98,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/projects": "Project",
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
+  "/settings/fork": "Fork settings",
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
@@ -164,6 +166,24 @@ const SOURCE_CONTROL_HOST_SEARCH_ITEMS = sourceControlClients.definitions.flatMa
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "fork-stealth-mode",
+    title: "Stealth mode",
+    to: "/settings/fork",
+    targetId: "fork-stealth-mode",
+    searchTerms: ["fork logo icon dock terminal vscode visual studio code appearance"],
+    desktopOnly: true,
+    macOnly: true,
+  },
+  {
+    id: "fork-stealth-icon",
+    title: "Stealth icon",
+    to: "/settings/fork",
+    targetId: "fork-stealth-icon",
+    searchTerms: ["fork logo dock terminal vscode visual studio code"],
+    desktopOnly: true,
+    macOnly: true,
+  },
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -1015,6 +1035,7 @@ export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
 const SEARCH_ITEMS_BY_ID = new Map(SETTINGS_SEARCH_ITEMS.map((item) => [item.id, item] as const));
 
 const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScope | null>> = {
+  "/settings/fork": null,
   "/settings/diagnostics": "environment",
   "/settings/projects": "project",
   "/settings/general": null,

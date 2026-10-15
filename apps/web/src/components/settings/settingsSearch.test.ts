@@ -157,8 +157,21 @@ describe("searchSettings", () => {
     vi.stubGlobal("navigator", { platform: "Win32" });
     try {
       expect(searchSettings("font smoothing")).toEqual([]);
+      expect(searchSettings("stealth")).toEqual([]);
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("makes stealth appearance searchable on the local device", () => {
+    for (const id of ["fork-stealth-mode", "fork-stealth-icon"] as const) {
+      expect(SETTINGS_SEARCH_ITEMS.find((item) => item.id === id)).toMatchObject({
+        to: "/settings/fork",
+        targetId: id,
+        desktopOnly: true,
+        macOnly: true,
+      });
+      expect(getSettingsSearchTargetScope(id)?.scope).toBeNull();
     }
   });
 

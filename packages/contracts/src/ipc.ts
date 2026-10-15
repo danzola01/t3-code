@@ -83,6 +83,21 @@ export type DesktopTheme = "light" | "dark" | "system";
 export type DesktopUpdateChannel = "latest" | "nightly";
 export type DesktopAppStageLabel = "Alpha" | "Dev" | "Nightly";
 
+export const DesktopStealthIconSchema = Schema.Literals(["terminal", "vscode"]);
+export type DesktopStealthIcon = typeof DesktopStealthIconSchema.Type;
+export const DesktopForkSettingsSchema = Schema.Struct({
+  stealthEnabled: Schema.Boolean,
+  stealthIcon: DesktopStealthIconSchema,
+});
+export type DesktopForkSettings = typeof DesktopForkSettingsSchema.Type;
+export const DesktopForkAppearanceStateSchema = Schema.Struct({
+  settings: DesktopForkSettingsSchema,
+  supported: Schema.Boolean,
+  availableIcons: Schema.Array(DesktopStealthIconSchema),
+  activeIcon: Schema.Literals(["default", "terminal", "vscode"]),
+});
+export type DesktopForkAppearanceState = typeof DesktopForkAppearanceStateSchema.Type;
+
 export const DesktopUpdateStatusSchema = Schema.Literals([
   "disabled",
   "idle",
@@ -1123,6 +1138,8 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  getForkAppearance?: () => Promise<DesktopForkAppearanceState>;
+  setForkAppearance?: (settings: DesktopForkSettings) => Promise<DesktopForkAppearanceState>;
   getAppBranding: () => DesktopAppBranding | null;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;

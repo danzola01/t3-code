@@ -180,6 +180,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   const layerSettings =
     setUpdateChannelError || options.beforeSetUpdateChannel
       ? Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
+          setForkAppearance: () => Effect.die("unexpected fork appearance change"),
           get: Effect.sync(() => testSettings),
           load: Effect.sync(() => testSettings),
           setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),

@@ -11,6 +11,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "./DesktopAppSettings.ts";
 
 const DesktopSettingsPatch = Schema.Struct({
+  forkAppearance: Schema.optionalKey(Schema.Unknown),
   linuxPasswordStore: Schema.optionalKey(
     Schema.Literals(["auto", "gnome-libsecret", "kwallet", "kwallet5", "kwallet6"]),
   ),
@@ -92,6 +93,47 @@ function writeSettingsPatch(patch: typeof DesktopSettingsPatch.Type) {
 
 describe("DesktopSettings", () => {
   it.effect(
+    "remembers the stealth choice across reloads while preserving other desktop settings",
+    () =>
+      withSettings(
+        Effect.gen(function* () {
+          const settings = yield* DesktopAppSettings.DesktopAppSettings;
+          yield* settings.setWslBackendEnabled(true);
+          yield* settings.setForkAppearance({ stealthEnabled: true, stealthIcon: "vscode" });
+          assert.deepEqual((yield* settings.load).forkAppearance, {
+            stealthEnabled: true,
+            stealthIcon: "vscode",
+          });
+          yield* settings.setForkAppearance({ stealthEnabled: false, stealthIcon: "vscode" });
+          const reloaded = yield* settings.load;
+          assert.deepEqual(reloaded.forkAppearance, {
+            stealthEnabled: false,
+            stealthIcon: "vscode",
+          });
+          assert.isTrue(reloaded.wslBackendEnabled);
+          assert.isFalse((yield* settings.setForkAppearance(reloaded.forkAppearance)).changed);
+        }),
+      ),
+  );
+
+  it.effect("ignores invalid fork appearance without discarding other preferences", () =>
+    withSettings(
+      Effect.gen(function* () {
+        yield* writeSettingsPatch({
+          forkAppearance: { stealthEnabled: true, stealthIcon: "unknown" },
+          wslBackendEnabled: true,
+        });
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        const loaded = yield* settings.load;
+        assert.deepEqual(
+          loaded.forkAppearance,
+          DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
+        );
+        assert.isTrue(loaded.wslBackendEnabled);
+      }),
+    ),
+  );
+  it.effect(
     "persists disabling and re-enabling local execution without clearing backend settings",
     () =>
       withSettings(
@@ -123,6 +165,7 @@ describe("DesktopSettings", () => {
     assert.deepEqual(
       DesktopAppSettings.resolveDefaultDesktopSettings("0.0.17-nightly.20260415.1"),
       {
+        forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
         linuxPasswordStore: "auto",
         localEnvironmentEnabled: true,
         mainWindowBounds: null,
@@ -153,6 +196,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
           linuxPasswordStore: "gnome-libsecret",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -261,6 +305,7 @@ describe("DesktopSettings", () => {
         );
 
         assert.deepEqual(yield* settings.load, {
+          forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
@@ -318,6 +363,7 @@ describe("DesktopSettings", () => {
           );
 
           assert.deepEqual(yield* settings.load, {
+            forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
             linuxPasswordStore: "auto",
             localEnvironmentEnabled: true,
             mainWindowBounds: null,
@@ -395,6 +441,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -424,6 +471,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -452,6 +500,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          forkAppearance: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.forkAppearance,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,

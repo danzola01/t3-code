@@ -77,6 +77,9 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getForkAppearance: () => ipcRenderer.invoke(IpcChannels.GET_FORK_APPEARANCE_CHANNEL),
+  setForkAppearance: (settings) =>
+    ipcRenderer.invoke(IpcChannels.SET_FORK_APPEARANCE_CHANNEL, settings),
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {
