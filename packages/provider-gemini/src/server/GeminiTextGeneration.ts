@@ -33,14 +33,10 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const runGeminiJson: TextGenerationOperations.Runner = ({
-    operation,
-    cwd,
-    prompt,
-    outputSchema: outputSchemaJson,
-    modelSelection,
-  }) =>
-    Effect.gen(function* () {
+  const runGeminiJson: TextGenerationOperations.Runner = Effect.fn(
+    "GeminiTextGeneration.runGeminiJson",
+  )(
+    function* ({ operation, cwd, prompt, outputSchema: outputSchemaJson, modelSelection }) {
       const resolvedModel = resolveGeminiAcpBaseModelId(modelSelection.model);
       const outputRef = yield* Ref.make("");
       const runtime = yield* makeGeminiAcpRuntime({
@@ -133,18 +129,21 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
             ),
         }),
       );
-    }).pipe(
-      Effect.mapError((cause) =>
-        isTextGenerationError(cause)
-          ? cause
-          : new TextGenerationError({
-              operation,
-              detail: "Gemini ACP text generation failed.",
-              cause,
-            }),
+    },
+    (effect, { operation }) =>
+      effect.pipe(
+        Effect.mapError((cause) =>
+          isTextGenerationError(cause)
+            ? cause
+            : new TextGenerationError({
+                operation,
+                detail: "Gemini ACP text generation failed.",
+                cause,
+              }),
+        ),
+        Effect.scoped,
       ),
-      Effect.scoped,
-    );
+  );
 
   return TextGenerationOperations.fromRunner(
     "GeminiTextGeneration",

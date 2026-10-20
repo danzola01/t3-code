@@ -27,6 +27,7 @@ import {
 } from "./GeminiAcpSupport.ts";
 import { geminiApprovalOptions, geminiPermissionOptionId } from "./GeminiPermissions.ts";
 import { expandGeminiCustomCommand, expandGeminiSkillMentions } from "./GeminiCatalog.ts";
+const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 const decodeUnknownJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -154,7 +155,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       promptFailure: (cause) =>
         makeProviderFailure({
           cause,
-          ...(Schema.is(EffectAcpErrors.AcpRequestError)(cause)
+          ...(isAcpRequestError(cause)
             ? {
                 message: /no capacity available|model is overloaded/iu.test(cause.errorMessage)
                   ? "Gemini is temporarily out of capacity. T3 Code retried the request, but the model is still unavailable. Try again shortly or choose another model."
@@ -163,28 +164,27 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
             : {}),
           class: "provider_error",
         }),
-      prepareMessage: ({ text, cwd }) =>
-        Effect.gen(function* () {
-          const expanded = yield* expandGeminiCustomCommand(
-            settings,
-            cwd,
-            text,
-            options.environment,
-          ).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-          );
-          const prepared = yield* expandGeminiSkillMentions(
-            settings,
-            cwd,
-            expanded.text,
-            options.environment,
-          ).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-          );
-          return { text: prepared, resources: expanded.resources };
-        }),
+      prepareMessage: Effect.fn("GeminiAdapter.prepareMessage")(function* ({ text, cwd }) {
+        const expanded = yield* expandGeminiCustomCommand(
+          settings,
+          cwd,
+          text,
+          options.environment,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        const prepared = yield* expandGeminiSkillMentions(
+          settings,
+          cwd,
+          expanded.text,
+          options.environment,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        return { text: prepared, resources: expanded.resources };
+      }),
       capabilities: {
         ...AcpProviderCapabilitiesV2,
         tools: { ...AcpProviderCapabilitiesV2.tools, supportsMcpTools: true },
@@ -205,66 +205,63 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
           requestedModelId: resolveGeminiAcpBaseModelId(modelSelection.model),
           mapError: (cause) => cause,
         }),
-      makeRuntime: (input) =>
-        Effect.gen(function* () {
-          const runtime = yield* makeGeminiAcpRuntime({
-            ...input,
-            geminiSettings: settings,
-            environment: { ...options.environment, ...input.processEnvironment },
-            childProcessSpawner,
-          }).pipe(
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, path),
-          );
-          return {
-            ...runtime,
-            start: () =>
-              runtime
-                .start()
-                .pipe(Effect.tap((started) => options.onSessionStarted?.(started) ?? Effect.void)),
-            handleSessionUpdate: (handler) =>
-              runtime.handleSessionUpdate((notification) =>
-                Effect.gen(function* () {
-                  if (notification.update.sessionUpdate === "available_commands_update")
-                    yield* (
-                      options.onAvailableCommands?.(
-                        notification.update.availableCommands,
-                        input.cwd,
-                      ) ?? Effect.void
-                    );
-                  const tool = notification.update;
-                  if (
-                    tool.sessionUpdate === "tool_call" ||
-                    tool.sessionUpdate === "tool_call_update"
-                  ) {
-                    const title = geminiThreadTitleFromTopicToolCall({
-                      toolCallId: tool.toolCallId,
-                      ...(tool.title ? { title: tool.title } : {}),
-                      data: {},
-                    });
-                    if (title)
-                      yield* handler({
-                        sessionId: notification.sessionId,
-                        update: { sessionUpdate: "session_info_update", title },
-                      });
-                  }
-                  yield* handler(notification);
-                }),
-              ),
-            prompt: (request) =>
+      makeRuntime: Effect.fn("GeminiAdapter.makeRuntime")(function* (input) {
+        const runtime = yield* makeGeminiAcpRuntime({
+          ...input,
+          geminiSettings: settings,
+          environment: { ...options.environment, ...input.processEnvironment },
+          childProcessSpawner,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        return {
+          ...runtime,
+          start: () =>
+            runtime
+              .start()
+              .pipe(Effect.tap((started) => options.onSessionStarted?.(started) ?? Effect.void)),
+          handleSessionUpdate: (handler) =>
+            runtime.handleSessionUpdate((notification) =>
               Effect.gen(function* () {
-                const response = yield* runtime.prompt(request).pipe(
-                  Effect.retry({
-                    times: 2,
-                    while: (error) =>
-                      /no capacity available|model is overloaded/iu.test(error.message),
-                    schedule: Schedule.spaced("1 second"),
-                  }),
-                );
-                return response;
+                if (notification.update.sessionUpdate === "available_commands_update")
+                  yield* (
+                    options.onAvailableCommands?.(
+                      notification.update.availableCommands,
+                      input.cwd,
+                    ) ?? Effect.void
+                  );
+                const tool = notification.update;
+                if (
+                  tool.sessionUpdate === "tool_call" ||
+                  tool.sessionUpdate === "tool_call_update"
+                ) {
+                  const title = geminiThreadTitleFromTopicToolCall({
+                    toolCallId: tool.toolCallId,
+                    ...(tool.title ? { title: tool.title } : {}),
+                    data: {},
+                  });
+                  if (title)
+                    yield* handler({
+                      sessionId: notification.sessionId,
+                      update: { sessionUpdate: "session_info_update", title },
+                    });
+                }
+                yield* handler(notification);
               }),
-          };
-        }),
+            ),
+          prompt: Effect.fn("GeminiAdapter.prompt")(function* (request) {
+            const response = yield* runtime.prompt(request).pipe(
+              Effect.retry({
+                times: 2,
+                while: (error) => /no capacity available|model is overloaded/iu.test(error.message),
+                schedule: Schedule.spaced("1 second"),
+              }),
+            );
+            return response;
+          }),
+        };
+      }),
     },
   });
 });

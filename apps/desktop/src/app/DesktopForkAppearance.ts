@@ -106,8 +106,8 @@ export const make = Effect.gen(function* () {
       });
     return resolved.value;
   });
-  const apply = (path: string) =>
-    Effect.gen(function* () {
+  const apply = Effect.fn("DesktopForkAppearance.apply")(
+    function* (path: string) {
       let imagePath = renderedImages.get(path) ?? path;
       if (path.endsWith(".icns") && !renderedImages.has(path)) {
         // Electron decodes PNG/JPEG, not ICNS. Convert the native artwork locally.
@@ -128,14 +128,14 @@ export const make = Effect.gen(function* () {
       }
       yield* app.setDockIcon(imagePath);
       return imagePath;
-    }).pipe(
-      // Keep at most one converted image per installed app until the desktop exits.
-      Effect.provideService(Scope.Scope, scope),
-      Effect.catchCause(
-        (cause) =>
-          new DesktopForkAppearanceError({ detail: "Could not change the Dock icon.", cause }),
-      ),
-    );
+    },
+    // Keep at most one converted image per installed app until the desktop exits.
+    Effect.provideService(Scope.Scope, scope),
+    Effect.catchCause(
+      (cause) =>
+        new DesktopForkAppearanceError({ detail: "Could not change the Dock icon.", cause }),
+    ),
+  );
   const get = Effect.gen(function* () {
     const availableIcons: DesktopStealthIcon[] = [];
     for (const icon of ["terminal", "vscode"] as const) {

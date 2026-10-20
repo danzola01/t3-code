@@ -72,44 +72,43 @@ export function resolveGeminiAuthMethodId(
   return candidates.find((methodId) => available.has(methodId)) ?? GEMINI_AUTH_METHOD_OAUTH;
 }
 
-export const makeGeminiAcpRuntime = (
+export const makeGeminiAcpRuntime = Effect.fn("makeGeminiAcpRuntime")(function* (
   input: GeminiAcpRuntimeInput,
-): Effect.Effect<
+): Effect.fn.Return<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
   EffectAcpErrors.AcpError,
   Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
-> =>
-  Effect.gen(function* () {
-    const persistedAuthMethod = yield* readGeminiSelectedAuthMethod(
-      input.geminiSettings ?? { homePath: "" },
-      input.environment,
-      input.cwd,
-    );
-    const acpContext = yield* Layer.build(
-      AcpSessionRuntime.layer({
-        ...input,
-        authenticateEagerly: true,
-        cancelBehavior: "wait-for-prompt",
-        retainInitialToolCallContent: true,
-        spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),
-        authMethodId: (initializeResult) =>
-          resolveGeminiAuthMethodId(
-            input.geminiSettings,
-            input.environment,
-            initializeResult,
-            persistedAuthMethod,
-          ),
-      }).pipe(
-        Layer.provide(
-          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),
+> {
+  const persistedAuthMethod = yield* readGeminiSelectedAuthMethod(
+    input.geminiSettings ?? { homePath: "" },
+    input.environment,
+    input.cwd,
+  );
+  const acpContext = yield* Layer.build(
+    AcpSessionRuntime.layer({
+      ...input,
+      authenticateEagerly: true,
+      cancelBehavior: "wait-for-prompt",
+      retainInitialToolCallContent: true,
+      spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),
+      authMethodId: (initializeResult) =>
+        resolveGeminiAuthMethodId(
+          input.geminiSettings,
+          input.environment,
+          initializeResult,
+          persistedAuthMethod,
         ),
+    }).pipe(
+      Layer.provide(
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),
       ),
-    );
-    const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
-      Effect.provide(acpContext),
-    );
-    return runtime;
-  });
+    ),
+  );
+  const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
+    Effect.provide(acpContext),
+  );
+  return runtime;
+});
 
 export function resolveGeminiAcpBaseModelId(model: string | null | undefined): string {
   const trimmed = model?.trim();

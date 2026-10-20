@@ -83,107 +83,113 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv, Path.
   configSchema: GeminiSettings,
   defaultConfig: (): GeminiSettings => decodeGeminiSettings({}),
   usage: geminiUsageReader,
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
-      const crypto = yield* Crypto.Crypto;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const httpClient = yield* HttpClient.HttpClient;
-      const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = yield* makeGeminiEnvironment(
-        config,
-        yield* mergeProviderInstanceEnvironment(environment),
-      );
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies GeminiSettings;
-      const runtimeSnapshot = yield* makeGeminiRuntimeSnapshot(effectiveConfig, processEnv);
-      const adapter = yield* makeGeminiAdapter(effectiveConfig, {
-        nativeEventLogger: eventLoggers.native,
-        onAvailableCommands: runtimeSnapshot.onAvailableCommands,
-        onSessionStarted: runtimeSnapshot.onSessionStarted,
-        environment: processEnv,
-        instanceId,
-      });
-      const textGeneration = yield* makeGeminiTextGeneration(effectiveConfig, processEnv);
-      const usageReader = yield* makeGeminiUsageReader(effectiveConfig, processEnv);
+  create: Effect.fn("GeminiDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }) {
+    const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
+    const crypto = yield* Crypto.Crypto;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const httpClient = yield* HttpClient.HttpClient;
+    const eventLoggers = yield* ProviderEventLoggers;
+    const processEnv = yield* makeGeminiEnvironment(
+      config,
+      yield* mergeProviderInstanceEnvironment(environment),
+    );
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stampIdentity = withInstanceIdentity({
+      instanceId,
+      displayName,
+      accentColor,
+      continuationGroupKey: continuationIdentity.continuationKey,
+    });
+    const effectiveConfig = { ...config, enabled } satisfies GeminiSettings;
+    const runtimeSnapshot = yield* makeGeminiRuntimeSnapshot(effectiveConfig, processEnv);
+    const adapter = yield* makeGeminiAdapter(effectiveConfig, {
+      nativeEventLogger: eventLoggers.native,
+      onAvailableCommands: runtimeSnapshot.onAvailableCommands,
+      onSessionStarted: runtimeSnapshot.onSessionStarted,
+      environment: processEnv,
+      instanceId,
+    });
+    const textGeneration = yield* makeGeminiTextGeneration(effectiveConfig, processEnv);
+    const usageReader = yield* makeGeminiUsageReader(effectiveConfig, processEnv);
 
-      const checkProvider = checkGeminiProviderStatus(effectiveConfig, processEnv).pipe(
-        Effect.flatMap((current) =>
-          effectiveConfig.enabled && current.installed && current.status === "ready"
-            ? usageReader.read.pipe(
-                Effect.map(({ email, plan, usageLimits }) => ({
-                  ...current,
-                  auth: email
-                    ? { status: "authenticated" as const, email, ...(plan ? { label: plan } : {}) }
-                    : current.auth,
-                  usageLimits,
-                })),
-              )
-            : Effect.succeed(current),
+    const checkProvider = checkGeminiProviderStatus(effectiveConfig, processEnv).pipe(
+      Effect.flatMap((current) =>
+        effectiveConfig.enabled && current.installed && current.status === "ready"
+          ? usageReader.read.pipe(
+              Effect.map(({ email, plan, usageLimits }) => ({
+                ...current,
+                auth: email
+                  ? { status: "authenticated" as const, email, ...(plan ? { label: plan } : {}) }
+                  : current.auth,
+                usageLimits,
+              })),
+            )
+          : Effect.succeed(current),
+      ),
+      Effect.map(stampIdentity),
+      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+
+    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
+    const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<GeminiSettings>>({
+      resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: (settings) =>
+        buildInitialGeminiProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
+      checkProvider,
+      enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
+        enrichGeminiSnapshot({
+          snapshot: currentSnapshot,
+          maintenanceCapabilities: MAINTENANCE_CAPABILITIES,
+          enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+          publishSnapshot,
+          httpClient,
+        }).pipe(
+          Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
         ),
-        Effect.map(stampIdentity),
-        Effect.provideService(Crypto.Crypto, crypto),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: `Failed to build Gemini snapshot: ${cause.message ?? String(cause)}`,
+            cause,
+          }),
+      ),
+    );
 
-      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<GeminiSettings>>({
-        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          buildInitialGeminiProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
-        checkProvider,
-        enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
-          enrichGeminiSnapshot({
-            snapshot: currentSnapshot,
-            maintenanceCapabilities: MAINTENANCE_CAPABILITIES,
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-            publishSnapshot,
-            httpClient,
-          }).pipe(
-            Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
-          ),
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Failed to build Gemini snapshot: ${cause.message ?? String(cause)}`,
-              cause,
-            }),
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot: runtimeSnapshot.wrap(snapshot),
+      snapshotForCwd: (cwd) =>
+        snapshot.getSnapshot.pipe(
+          Effect.flatMap((current) => runtimeSnapshot.snapshotForCwd(current, cwd)),
         ),
-      );
-
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot: runtimeSnapshot.wrap(snapshot),
-        snapshotForCwd: (cwd) =>
-          snapshot.getSnapshot.pipe(
-            Effect.flatMap((current) => runtimeSnapshot.snapshotForCwd(current, cwd)),
-          ),
-        orchestrationAdapter: adapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
+      orchestrationAdapter: adapter,
+      textGeneration,
+    } satisfies ProviderInstance;
+  }),
 };

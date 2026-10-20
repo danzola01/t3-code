@@ -58,10 +58,8 @@ const GEMINI_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   },
 ];
 
-export function buildInitialGeminiProviderSnapshot(
-  geminiSettings: GeminiSettings,
-): Effect.Effect<ServerProviderDraft> {
-  return Effect.gen(function* () {
+export const buildInitialGeminiProviderSnapshot = Effect.fn("buildInitialGeminiProviderSnapshot")(
+  function* (geminiSettings: GeminiSettings): Effect.fn.Return<ServerProviderDraft> {
     const checkedAt = yield* Effect.map(DateTime.now, DateTime.formatIso);
     const models = geminiModelsFromSettings(geminiSettings.customModels);
 
@@ -94,8 +92,8 @@ export function buildInitialGeminiProviderSnapshot(
         message: "Checking Gemini CLI availability...",
       },
     });
-  });
-}
+  },
+);
 
 function geminiModelsFromSettings(
   customModels: ReadonlyArray<CustomModelSetting> | undefined,
@@ -128,43 +126,41 @@ export function buildGeminiDiscoveredModelsFromSessionModelState(
     .filter((model): model is ServerProviderModel => model !== undefined);
 }
 
-const initializeGeminiAcp = (
+const initializeGeminiAcp = Effect.fn("initializeGeminiAcp")(function* (
   geminiSettings: GeminiSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) =>
-  Effect.gen(function* () {
-    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const fileSystem = yield* FileSystem.FileSystem;
-    // Installation readiness must not authenticate, start MCP servers or read
-    // project configuration from whichever directory launched the T3 server.
-    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-probe-" });
-    const acp = yield* makeGeminiAcpRuntime({
-      geminiSettings,
-      environment,
-      childProcessSpawner,
-      cwd,
-      clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-    });
-    yield* acp.initialize();
-  }).pipe(Effect.scoped);
-
-const runGeminiVersionCommand = (
-  geminiSettings: GeminiSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  Effect.gen(function* () {
-    const command = geminiSettings.binaryPath || "gemini";
-    const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
-      env: environment,
-    });
-    return yield* spawnAndCollect(
-      command,
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: environment,
-        shell: spawnCommand.shell,
-      }),
-    );
+) {
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  // Installation readiness must not authenticate, start MCP servers or read
+  // project configuration from whichever directory launched the T3 server.
+  const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gemini-probe-" });
+  const acp = yield* makeGeminiAcpRuntime({
+    geminiSettings,
+    environment,
+    childProcessSpawner,
+    cwd,
+    clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
   });
+  yield* acp.initialize();
+}, Effect.scoped);
+
+const runGeminiVersionCommand = Effect.fn("runGeminiVersionCommand")(function* (
+  geminiSettings: GeminiSettings,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const command = geminiSettings.binaryPath || "gemini";
+  const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
+    env: environment,
+  });
+  return yield* spawnAndCollect(
+    command,
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      env: environment,
+      shell: spawnCommand.shell,
+    }),
+  );
+});
 
 export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(function* (
   geminiSettings: GeminiSettings,
