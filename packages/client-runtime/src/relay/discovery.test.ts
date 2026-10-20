@@ -176,6 +176,32 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
 });
 
 describe("RelayEnvironmentDiscovery", () => {
+  it.effect(
+    "discovers registered environments when starting with an existing signed-in session",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const requests = yield* Ref.get(harness.statusRequests);
+        for (const environment of environments) {
+          yield* Deferred.succeed(
+            requests.get(environment.environmentId)!,
+            status(environment, "online"),
+          );
+        }
+
+        yield* Effect.gen(function* () {
+          const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+          yield* Effect.yieldNow;
+
+          const state = yield* SubscriptionRef.get(discovery.state);
+          expect([...state.environments.keys()]).toEqual(
+            environments.map((environment) => environment.environmentId),
+          );
+          expect(yield* Ref.get(harness.listCalls)).toBe(1);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
   it.effect("publishes each environment status as soon as that lookup completes", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -351,6 +377,7 @@ describe("RelayEnvironmentDiscovery", () => {
   it.effect("refreshes proactively when credentials change before any manual refresh", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
+      yield* Ref.set(harness.clerkToken, null);
       yield* Effect.gen(function* () {
         const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
         const requests = yield* Ref.get(harness.statusRequests);
@@ -365,6 +392,7 @@ describe("RelayEnvironmentDiscovery", () => {
         // a real sign-in which always happens long after service start.
         yield* Effect.yieldNow;
 
+        yield* Ref.set(harness.clerkToken, "clerk-token");
         yield* harness.wake("credentials-changed");
         const populated = yield* SubscriptionRef.changes(discovery.state).pipe(
           Stream.filter(
@@ -375,6 +403,23 @@ describe("RelayEnvironmentDiscovery", () => {
         );
         expect(Option.isNone(populated.error)).toBe(true);
         expect(yield* Ref.get(harness.listCalls)).toBe(1);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("does not list environments when starting signed out", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Ref.set(harness.clerkToken, null);
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        yield* Effect.yieldNow;
+
+        const state = yield* SubscriptionRef.get(discovery.state);
+        expect(state.environments.size).toBe(0);
+        expect(state.refreshing).toBe(false);
+        expect(Option.isNone(state.error)).toBe(true);
+        expect(yield* Ref.get(harness.listCalls)).toBe(0);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

@@ -340,6 +340,12 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
     Effect.forkScoped,
   );
 
+  // A restored session may already be active before the wakeup subscription
+  // starts. Discover it now instead of waiting for another account change.
+  if (Option.isSome(yield* session.identity)) {
+    yield* refresh.pipe(Effect.forkScoped);
+  }
+
   return RelayEnvironmentDiscovery.of({ state, refresh });
 });
 
