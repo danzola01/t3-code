@@ -49,34 +49,68 @@ function makeAcpGeminiWrapper(directory: string, environment: Record<string, str
 const testLayer = NodeServices.layer;
 
 it.layer(testLayer)("GeminiTextGeneration", (it) => {
-  it.effect("uses ACP for structured text-generation jobs", () =>
+  it.effect("uses ACP for structured text-generation jobs, including fenced replies", () =>
     Effect.gen(function* () {
       const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "gemini-text-acp-"));
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
       );
-      const binaryPath = makeAcpGeminiWrapper(directory, {
-        T3_ACP_PROMPT_RESPONSE_TEXT: encodeUnknownJson({
-          subject: "Add Gemini provider",
-          body: "Wire Gemini CLI through ACP.",
-        }),
-      });
-      const textGeneration = yield* makeGeminiTextGeneration(
-        decodeGeminiSettings({ binaryPath, authMethod: "oauth-personal" }),
-      );
-
-      const generated = yield* textGeneration.generateCommitMessage({
-        cwd: process.cwd(),
-        branch: "feature/gemini",
-        stagedSummary: "M apps/server/src/provider/gemini/GeminiDriver.ts",
-        stagedPatch: "diff --git a/GeminiDriver.ts b/GeminiDriver.ts",
-        modelSelection: createModelSelection(ProviderInstanceId.make("gemini"), "composer-2"),
-      });
-
-      expect(generated).toEqual({
+      const reply = {
         subject: "Add Gemini provider",
         body: "Wire Gemini CLI through ACP.",
-      });
+      };
+      const json = encodeUnknownJson(reply);
+      for (const response of [json, `Here is the commit message:\n\`\`\`json\n${json}\n\`\`\``]) {
+        const binaryPath = makeAcpGeminiWrapper(directory, {
+          T3_ACP_PROMPT_RESPONSE_TEXT: response,
+        });
+        const textGeneration = yield* makeGeminiTextGeneration(
+          decodeGeminiSettings({ binaryPath, authMethod: "oauth-personal", homePath: directory }),
+        );
+
+        const generated = yield* textGeneration.generateCommitMessage({
+          cwd: directory,
+          branch: "feature/gemini",
+          stagedSummary: "M packages/provider-gemini/src/server/GeminiDriver.ts",
+          stagedPatch: "diff --git a/GeminiDriver.ts b/GeminiDriver.ts",
+          modelSelection: createModelSelection(ProviderInstanceId.make("gemini"), "composer-2"),
+        });
+
+        expect(generated).toEqual(reply);
+      }
+    }).pipe(Effect.scoped),
+  );
+  it.effect("keeps invalid replies as operation-specific text-generation errors", () =>
+    Effect.gen(function* () {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "gemini-text-invalid-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      );
+      for (const response of ["not JSON", encodeUnknownJson({ subject: 42, body: "" })]) {
+        const binaryPath = makeAcpGeminiWrapper(directory, {
+          T3_ACP_PROMPT_RESPONSE_TEXT: response,
+        });
+        const textGeneration = yield* makeGeminiTextGeneration(
+          decodeGeminiSettings({ binaryPath, authMethod: "oauth-personal", homePath: directory }),
+        );
+        const result = yield* textGeneration
+          .generateCommitMessage({
+            cwd: directory,
+            branch: "feature/gemini",
+            stagedSummary: "M GeminiDriver.ts",
+            stagedPatch: "diff --git a/GeminiDriver.ts b/GeminiDriver.ts",
+            modelSelection: createModelSelection(ProviderInstanceId.make("gemini"), "composer-2"),
+          })
+          .pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "TextGenerationError",
+            operation: "generateCommitMessage",
+            detail: "Gemini Agent returned invalid structured output.",
+          },
+        });
+      }
     }).pipe(Effect.scoped),
   );
 });

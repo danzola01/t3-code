@@ -71,25 +71,45 @@ describe("GeminiAcpSupport", () => {
     expect(resolveGeminiAcpBaseModelId(" gemini-2.5-pro ")).toBe("gemini-2.5-pro");
   });
 
-  it.effect("switches models only when requested", () =>
+  it.effect("switches models through the negotiated protocol only when requested", () =>
     Effect.gen(function* () {
-      const calls: string[] = [];
-      const runtime = {
-        setSessionModel: (modelId: string) =>
-          Effect.sync(() => {
-            calls.push(modelId);
-            return {};
-          }),
-      };
-      expect(
-        yield* applyGeminiAcpModelSelection({
+      for (const protocolVersion of [1, 2]) {
+        const calls: string[] = [];
+        const runtime = {
+          setSessionModel: (modelId: string) =>
+            protocolVersion === 1
+              ? Effect.sync(() => {
+                  calls.push(modelId);
+                  return {};
+                })
+              : Effect.die("ACP v2 must use session configuration for model selection"),
+          setModel: (modelId: string) =>
+            protocolVersion === 2
+              ? Effect.sync(() => {
+                  calls.push(modelId);
+                })
+              : Effect.die("ACP v1 must use session/set_model"),
+        };
+        const input = {
           runtime,
-          currentModelId: "auto",
-          requestedModelId: "gemini-2.5-pro",
+          startResult: {
+            sessionId: "session",
+            modelConfigId: undefined,
+            initializeResult: { protocolVersion },
+            sessionSetupResult: {
+              sessionId: "session",
+              models: { currentModelId: " auto ", availableModels: [] },
+            },
+          },
           mapError: (cause: EffectAcpErrors.AcpError) => cause.message,
-        }),
-      ).toBe("gemini-2.5-pro");
-      expect(calls).toEqual(["gemini-2.5-pro"]);
+        };
+        for (const requestedModelId of [undefined, "auto", "gemini-2.5-pro"]) {
+          expect(yield* applyGeminiAcpModelSelection({ ...input, requestedModelId })).toBe(
+            requestedModelId ?? "auto",
+          );
+        }
+        expect(calls).toEqual(["gemini-2.5-pro"]);
+      }
     }),
   );
 });

@@ -9,13 +9,11 @@ import { ChildProcessSpawner } from "effect/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
 
 import { type GeminiSettings } from "@t3tools/contracts";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import { TextGenerationError } from "@t3tools/contracts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   applyGeminiAcpModelSelection,
-  currentGeminiModelIdFromSessionSetup,
   makeGeminiAcpRuntime,
   resolveGeminiAcpBaseModelId,
 } from "./GeminiAcpSupport.ts";
@@ -36,7 +34,8 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
   const runGeminiJson: TextGenerationOperations.Runner = Effect.fn(
     "GeminiTextGeneration.runGeminiJson",
   )(
-    function* ({ operation, cwd, prompt, outputSchema: outputSchemaJson, modelSelection }) {
+    function* (request) {
+      const { operation, cwd, prompt, modelSelection } = request;
       const resolvedModel = resolveGeminiAcpBaseModelId(modelSelection.model);
       const outputRef = yield* Ref.make("");
       const runtime = yield* makeGeminiAcpRuntime({
@@ -66,11 +65,8 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
       const promptResult = yield* Effect.gen(function* () {
         const started = yield* runtime.start();
         yield* applyGeminiAcpModelSelection({
-          runtime:
-            started.initializeResult.protocolVersion === 1
-              ? runtime
-              : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
-          currentModelId: currentGeminiModelIdFromSessionSetup(started.sessionSetupResult),
+          runtime,
+          startResult: started,
           requestedModelId: resolvedModel,
           mapError: (cause) =>
             new TextGenerationError({
@@ -116,19 +112,7 @@ export const makeGeminiTextGeneration = Effect.fn("makeGeminiTextGeneration")(fu
         });
       }
 
-      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
-      return yield* decodeOutput(extractJsonObject(trimmed)).pipe(
-        Effect.catchTags({
-          SchemaError: (cause) =>
-            Effect.fail(
-              new TextGenerationError({
-                operation,
-                detail: "Gemini Agent returned invalid structured output.",
-                cause,
-              }),
-            ),
-        }),
-      );
+      return yield* TextGenerationOperations.decodeJsonReply(request, "Gemini Agent", trimmed);
     },
     (effect, { operation }) =>
       effect.pipe(

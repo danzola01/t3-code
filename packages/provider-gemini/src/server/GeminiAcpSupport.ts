@@ -116,27 +116,25 @@ export function resolveGeminiAcpBaseModelId(model: string | null | undefined): s
   return normalizeModelSlug(base, GEMINI_DRIVER_KIND) ?? "auto";
 }
 
-export function currentGeminiModelIdFromSessionSetup(
-  sessionSetupResult:
-    | EffectAcpSchema.LoadSessionResponse
-    | EffectAcpSchema.NewSessionResponse
-    | EffectAcpSchema.ResumeSessionResponse,
-): string | undefined {
-  return sessionSetupResult.models?.currentModelId?.trim() || undefined;
-}
-
 export function applyGeminiAcpModelSelection<E>(input: {
-  readonly runtime: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "setSessionModel">;
-  readonly currentModelId: string | undefined;
+  readonly runtime: Pick<
+    AcpSessionRuntime.AcpSessionRuntime["Service"],
+    "setSessionModel" | "setModel"
+  >;
+  readonly startResult: AcpSessionRuntime.AcpSessionRuntimeStartResult;
   readonly requestedModelId: string | undefined;
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<string | undefined, E> {
+  const currentModelId =
+    input.startResult.sessionSetupResult.models?.currentModelId?.trim() || undefined;
   const shouldSwitchModel =
-    input.requestedModelId !== undefined && input.requestedModelId !== input.currentModelId;
+    input.requestedModelId !== undefined && input.requestedModelId !== currentModelId;
   if (!shouldSwitchModel) {
-    return Effect.succeed(input.currentModelId);
+    return Effect.succeed(currentModelId);
   }
-  return input.runtime
-    .setSessionModel(input.requestedModelId)
-    .pipe(Effect.mapError(input.mapError), Effect.as(input.requestedModelId));
+  const switchModel =
+    input.startResult.initializeResult.protocolVersion === 1
+      ? input.runtime.setSessionModel(input.requestedModelId)
+      : input.runtime.setModel(input.requestedModelId);
+  return switchModel.pipe(Effect.mapError(input.mapError), Effect.as(input.requestedModelId));
 }

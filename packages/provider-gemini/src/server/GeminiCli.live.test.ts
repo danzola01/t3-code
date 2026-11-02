@@ -272,7 +272,7 @@ for await (const line of lines) {
           assert.equal(loaded.sessionId, started.sessionId);
           yield* applyGeminiAcpModelSelection({
             runtime,
-            currentModelId: loaded.sessionSetupResult.models?.currentModelId,
+            startResult: loaded,
             requestedModelId: selected.modelId,
             mapError: (cause) => cause,
           });
@@ -299,7 +299,7 @@ for await (const line of lines) {
           assert.equal(resumed.sessionId, started.sessionId);
           yield* applyGeminiAcpModelSelection({
             runtime,
-            currentModelId: resumed.sessionSetupResult.models?.currentModelId,
+            startResult: resumed,
             requestedModelId: selected.modelId,
             mapError: (cause) => cause,
           });

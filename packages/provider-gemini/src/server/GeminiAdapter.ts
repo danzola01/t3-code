@@ -21,7 +21,6 @@ import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeL
 import type { AcpSessionRuntimeStartResult } from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   applyGeminiAcpModelSelection,
-  currentGeminiModelIdFromSessionSetup,
   makeGeminiAcpRuntime,
   resolveGeminiAcpBaseModelId,
 } from "./GeminiAcpSupport.ts";
@@ -197,11 +196,8 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       resolveModelId: (selection) => resolveGeminiAcpBaseModelId(selection.model),
       applyModelSelection: ({ runtime, startResult, modelSelection }) =>
         applyGeminiAcpModelSelection({
-          runtime:
-            startResult.initializeResult.protocolVersion === 1
-              ? runtime
-              : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
-          currentModelId: currentGeminiModelIdFromSessionSetup(startResult.sessionSetupResult),
+          runtime,
+          startResult,
           requestedModelId: resolveGeminiAcpBaseModelId(modelSelection.model),
           mapError: (cause) => cause,
         }),
