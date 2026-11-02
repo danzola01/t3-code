@@ -5,14 +5,7 @@ import { CustomModelSetting } from "./model.ts";
 import { TrimmedString } from "./baseSchemas.ts";
 import { makeBinaryPathSetting, makeProviderSettingsSchema } from "./settings.ts";
 
-/**
- * Instance-local Gemini CLI configuration.
- *
- * This intentionally lives outside the legacy `settings.providers` object.
- * Gemini instances are registered through the open `providerInstances` list,
- * which keeps the fork-specific provider from widening the core settings
- * schema and makes upstream settings migrations less likely to conflict.
- */
+/** Gemini uses instance-local configuration outside legacy settings.providers. */
 export const GeminiSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(

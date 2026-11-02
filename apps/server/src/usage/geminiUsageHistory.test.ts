@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 
 import { parseGeminiRecord, geminiUsageFormat } from "@t3tools/provider-gemini/server/usage";
 import { listTranscriptFiles, readTranscriptRecords } from "./usageTranscriptReader.ts";
-import { decodeScanCache, dedupeWithinFile, encodeScanCache } from "./usageScanCache.ts";
+import {
+  decodeScanCache,
+  dedupeWithinFile,
+  makeScanCacheWriter,
+  type ScanCache,
+} from "./usageScanCache.ts";
 import {
   cacheSavingsUsd,
   createOverrideRateTable,
@@ -14,6 +19,13 @@ import {
   priceUsage,
 } from "./usagePricing.ts";
 
+const encodeScanCache = (cache: ScanCache) =>
+  JSON.parse(makeScanCacheWriter()(cache, {})) as {
+    readonly version: number;
+    readonly models: readonly string[];
+    readonly sessions: readonly string[];
+    readonly files: Readonly<Record<string, Record<string, unknown>>>;
+  };
 let dir: string;
 beforeEach(async () => {
   dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "gemini-usage-"));

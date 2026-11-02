@@ -43,7 +43,7 @@ export class DesktopForkAppearance extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopForkAppearance") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -175,7 +175,7 @@ export const make = Effect.gen(function* () {
   });
   return DesktopForkAppearance.of({
     get,
-    set: (value) => lock.withPermit(set(value)),
+    set: Effect.fn("DesktopForkAppearance.set")((value) => lock.withPermit(set(value))),
     configure: lock
       .withPermit(
         Effect.gen(function* () {

@@ -1,22 +1,23 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-
+import { filterSidebarItemsByEnvironment } from "../components/Sidebar.logic";
+import { orderItemsByPreferredIds, sortSidebarV2ProjectGroups } from "../components/Sidebar.logic";
 import {
-  filterSidebarItemsByEnvironment,
-  orderItemsByPreferredIds,
-  sortSidebarV2ProjectGroups,
-} from "../components/Sidebar.logic";
-import { getProjectOrderKey, selectProjectGroupingSettings } from "../logicalProject";
+  getProjectOrderKey,
+  selectProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { useEnvironmentIdentities, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useThreadShells } from "../state/entities";
+import { useDelegatedUnderParent, useProjects, useQuietThreadShells } from "../state/entities";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 
-/** The sidebar's project groups, in the order the sidebar shows them. */
 export function useSidebarProjectGroups(environmentScopeId: EnvironmentId | null = null) {
   const allProjects = useProjects();
   const projects = filterSidebarItemsByEnvironment(allProjects, environmentScopeId);
-  const threads = useThreadShells();
+  // Activity order lags a running thread's streaming ticks until its next
+  // real change; reading every tick re-rendered the whole sidebar with it.
+  const threads = useQuietThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const sortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
@@ -41,5 +42,5 @@ export function useSidebarProjectGroups(environmentScopeId: EnvironmentId | null
     primaryEnvironmentId,
     resolveEnvironmentLabel: (environmentId) => labels.get(environmentId) ?? null,
   });
-  return sortSidebarV2ProjectGroups(unsortedGroups, threads, sortOrder);
+  return sortSidebarV2ProjectGroups(unsortedGroups, threads, sortOrder, delegatedUnderParent);
 }

@@ -49,7 +49,6 @@ it.layer(NodeServices.layer)("Gemini readiness", (it) => {
           requests.map((request) => request.method),
           ["initialize"],
         );
-        assert.isFalse(snapshot.requiresNewThreadForModelChange);
       }),
   );
 

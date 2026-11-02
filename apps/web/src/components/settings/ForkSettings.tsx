@@ -10,6 +10,7 @@ export function ForkSettings() {
   const [error, setError] = useState<string | null>(null);
   const bridge = window.desktopBridge;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads native Dock appearance through the Electron bridge while mounted
   useEffect(() => {
     let cancelled = false;
     if (!bridge?.getForkAppearance) return;

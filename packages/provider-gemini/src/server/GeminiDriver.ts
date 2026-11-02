@@ -124,20 +124,19 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv, Path.
     const textGeneration = yield* makeGeminiTextGeneration(effectiveConfig, processEnv);
     const usageReader = yield* makeGeminiUsageReader(effectiveConfig, processEnv);
 
-    const checkProvider = checkGeminiProviderStatus(effectiveConfig, processEnv).pipe(
-      Effect.flatMap((current) =>
-        effectiveConfig.enabled && current.installed && current.status === "ready"
-          ? usageReader.read.pipe(
-              Effect.map(({ email, plan, usageLimits }) => ({
-                ...current,
-                auth: email
-                  ? { status: "authenticated" as const, email, ...(plan ? { label: plan } : {}) }
-                  : current.auth,
-                usageLimits,
-              })),
-            )
-          : Effect.succeed(current),
-      ),
+    const checkProvider = Effect.gen(function* () {
+      const current = yield* checkGeminiProviderStatus(effectiveConfig, processEnv);
+      if (!effectiveConfig.enabled || !current.installed || current.status !== "ready")
+        return current;
+      const { email, plan, usageLimits } = yield* usageReader.read;
+      return {
+        ...current,
+        auth: email
+          ? { status: "authenticated" as const, email, ...(plan ? { label: plan } : {}) }
+          : current.auth,
+        usageLimits,
+      };
+    }).pipe(
       Effect.map(stampIdentity),
       Effect.provideService(Crypto.Crypto, crypto),
       Effect.provideService(FileSystem.FileSystem, fileSystem),

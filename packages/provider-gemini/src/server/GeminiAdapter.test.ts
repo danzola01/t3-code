@@ -32,6 +32,8 @@ import {
 import { parseSessionUpdateEvent } from "@t3tools/provider-acp/server/runtimeModel";
 import type * as Acp from "effect-acp/compat";
 import { makeGeminiAdapter, normalizeGeminiMcpToolCall } from "./GeminiAdapter.ts";
+const decodeGeminiSettings = Schema.decodeSync(GeminiSettings);
+
 function makeTurnInput(input: {
   readonly threadId: ThreadId;
   readonly providerThread: OrchestrationV2ProviderThread;
@@ -115,7 +117,7 @@ it.layer(layer)("GeminiAdapter V2", (it) => {
       });
       const modelSelection = { instanceId, model: "composer-2" };
       const adapter = yield* makeGeminiAdapter(
-        yield* Schema.decodeEffect(GeminiSettings)({
+        decodeGeminiSettings({
           binaryPath: process.execPath,
           launchArgs: JSON.stringify(
             NodeURL.fileURLToPath(

@@ -116,7 +116,6 @@ it.layer(NodeServices.layer)("Gemini runtime snapshots", (it) => {
           updated.models.map((model) => model.slug),
           ["auto", "gemini-test", "company-model"],
         );
-        assert.isFalse(updated.requiresNewThreadForModelChange);
         yield* fs.remove(path.join(cwd, ".gemini", "commands", "review.toml"));
         const refreshed = yield* snapshot.refresh;
         assert.isFalse(
