@@ -1,4 +1,5 @@
 import { type GeminiSettings, ProviderDriverKind } from "@t3tools/contracts";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +13,7 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { geminiSessionModeForPolicy } from "./GeminiPermissions.ts";
 import { readGeminiSelectedAuthMethod } from "./GeminiHome.ts";
 
 const GEMINI_AUTH_METHOD_OAUTH = "oauth-personal";
@@ -22,9 +24,10 @@ const GEMINI_DRIVER_KIND = ProviderDriverKind.make("gemini");
 
 type GeminiAcpRuntimeGeminiSettings = Pick<
   GeminiSettings,
-  "authMethod" | "binaryPath" | "homePath" | "launchArgs"
+  "authMethod" | "binaryPath" | "homePath" | "launchArgs" | "sandbox" | "skipTrust" | "policyPath"
 >;
-type GeminiAcpSpawnSettings = Pick<GeminiSettings, "binaryPath" | "launchArgs">;
+type GeminiAcpSpawnSettings = Pick<GeminiSettings, "binaryPath" | "launchArgs"> &
+  Partial<Pick<GeminiSettings, "sandbox" | "skipTrust" | "policyPath">>;
 
 interface GeminiAcpRuntimeInput extends Omit<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
@@ -33,16 +36,62 @@ interface GeminiAcpRuntimeInput extends Omit<
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly geminiSettings: GeminiAcpRuntimeGeminiSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly runtimePolicy?: Pick<ProviderAdapterV2RuntimePolicy, "interactionMode"> &
+    Partial<Pick<ProviderAdapterV2RuntimePolicy, "runtimeMode" | "maxRuntimeMode">>;
 }
 
 export function buildGeminiAcpSpawnInput(
   geminiSettings: GeminiAcpSpawnSettings | null | undefined,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
+  runtimePolicy?: Pick<ProviderAdapterV2RuntimePolicy, "interactionMode"> &
+    Partial<Pick<ProviderAdapterV2RuntimePolicy, "runtimeMode" | "maxRuntimeMode">>,
 ): AcpSessionRuntime.AcpSpawnInput {
+  let args = [...tokenizeCliArgs(geminiSettings?.launchArgs)];
+  const hasFlag = (...names: string[]) =>
+    args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
+  if (geminiSettings?.sandbox && !hasFlag("--sandbox", "-s")) args.push("--sandbox");
+  if (geminiSettings?.skipTrust && !hasFlag("--skip-trust")) args.push("--skip-trust");
+  if (geminiSettings?.policyPath?.trim() && !hasFlag("--policy"))
+    args.push("--policy", geminiSettings.policyPath.trim());
+  const approvalMode =
+    runtimePolicy?.interactionMode === "plan"
+      ? "plan"
+      : runtimePolicy?.runtimeMode !== undefined
+        ? geminiSessionModeForPolicy({ ...runtimePolicy, runtimeMode: runtimePolicy.runtimeMode })
+        : undefined;
+  if (approvalMode !== undefined) {
+    const restricted =
+      runtimePolicy?.interactionMode === "plan" ||
+      runtimePolicy?.runtimeMode !== "full-access" ||
+      (runtimePolicy.maxRuntimeMode !== undefined &&
+        runtimePolicy.maxRuntimeMode !== "full-access");
+    const normalized: string[] = [];
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index]!;
+      if (arg === "--approval-mode") {
+        index++;
+        continue;
+      }
+      if (
+        arg.startsWith("--approval-mode=") ||
+        ["--yolo", "-y"].some((flag) => arg === flag || arg.startsWith(`${flag}=`))
+      )
+        continue;
+      if (restricted && (arg === "--allowed-tools" || arg.startsWith("--allowed-tools="))) {
+        if (arg === "--allowed-tools")
+          while (args[index + 1] && !args[index + 1]!.startsWith("-")) index++;
+        continue;
+      }
+      normalized.push(arg);
+    }
+    args = normalized;
+    args.push("--approval-mode", approvalMode === "autoEdit" ? "auto_edit" : approvalMode);
+  }
+  if (!hasFlag("--acp", "--experimental-acp")) args.push("--acp");
   return {
     command: geminiSettings?.binaryPath || "gemini",
-    args: [...tokenizeCliArgs(geminiSettings?.launchArgs), "--acp"],
+    args,
     cwd,
     ...(environment ? { env: environment } : {}),
   };
@@ -90,7 +139,12 @@ export const makeGeminiAcpRuntime = Effect.fn("makeGeminiAcpRuntime")(function* 
       authenticateEagerly: true,
       cancelBehavior: "wait-for-prompt",
       retainInitialToolCallContent: true,
-      spawn: buildGeminiAcpSpawnInput(input.geminiSettings, input.cwd, input.environment),
+      spawn: buildGeminiAcpSpawnInput(
+        input.geminiSettings,
+        input.cwd,
+        input.environment,
+        input.runtimePolicy,
+      ),
       authMethodId: (initializeResult) =>
         resolveGeminiAuthMethodId(
           input.geminiSettings,

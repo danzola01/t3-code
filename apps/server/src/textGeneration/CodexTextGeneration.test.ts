@@ -444,60 +444,77 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   );
 });
 
-it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhausted) =>
+it.effect.each([
+  "ready",
+  "exhausted",
+  "unauthenticated",
+  "uninstalled",
+  "disabled",
+  "unavailable",
+  "missing",
+] as const)("text generation preflight: %s", (state) =>
   Effect.gen(function* () {
     const primary = ProviderInstanceId.make("codex");
-    const fallback = ProviderInstanceId.make("claude_work");
+    const fallback = ProviderInstanceId.make("gemini_work");
     const selection = {
       instanceId: primary,
       model: "chat-model",
       options: [{ id: "effort", value: "high" }],
     };
     const calls: ModelSelection[] = [];
-    const instances: ProviderInstance[] = [primary, fallback].map((instanceId) => {
-      const driver = ProviderDriverKind.make(instanceId === primary ? "codex" : "claudeAgent");
-      const snapshot: ServerProvider = {
-        instanceId,
-        driver,
-        enabled: true,
-        installed: true,
-        status: "ready",
-        auth: { status: "authenticated" },
-        version: null,
-        checkedAt: "1970-01-01T00:00:00Z",
-        models: [],
-        slashCommands: [],
-        skills: [],
-        ...(exhausted && instanceId === primary
-          ? {
-              usageLimits: {
-                checkedAt: "1970-01-01T00:00:00Z",
-                windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 100 }],
-              },
-            }
-          : {}),
-      };
-      return {
-        instanceId,
-        driverKind: driver,
-        continuationIdentity: { driverKind: driver, continuationKey: instanceId },
-        displayName: undefined,
-        enabled: true,
-        snapshot: { getSnapshot: Effect.succeed(snapshot) } as ProviderInstance["snapshot"],
-        orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
-        textGeneration: TextGeneration.TextGeneration.of({
-          generateCommitMessage: () => Effect.die("unused"),
-          generatePrContent: () => Effect.die("unused"),
-          generateBranchName: () => Effect.die("unused"),
-          generateReviewGuide: () => Effect.die("unused"),
-          generateThreadTitle: (input) =>
-            Effect.sync(() => {
-              calls.push(input.modelSelection);
-              return { title: "Generated title" };
-            }),
-        }),
-      };
-    });
+    const instances: ProviderInstance[] = [...(state === "missing" ? [] : [primary]), fallback].map(
+      (instanceId) => {
+        const driver = ProviderDriverKind.make(instanceId === primary ? "codex" : "gemini");
+        const snapshot: ServerProvider = {
+          instanceId,
+          driver,
+          enabled: instanceId !== primary || state !== "disabled",
+          installed: instanceId !== primary || state !== "uninstalled",
+          status: "ready",
+          availability:
+            instanceId === primary && state === "unavailable" ? "unavailable" : "available",
+          auth: {
+            status:
+              instanceId === primary && state === "unauthenticated"
+                ? "unauthenticated"
+                : "authenticated",
+          },
+          version: null,
+          checkedAt: "1970-01-01T00:00:00Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+          ...(state === "exhausted" && instanceId === primary
+            ? {
+                usageLimits: {
+                  checkedAt: "1970-01-01T00:00:00Z",
+                  windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 100 }],
+                },
+              }
+            : {}),
+        };
+        return {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: instanceId },
+          displayName: undefined,
+          enabled: true,
+          snapshot: { getSnapshot: Effect.succeed(snapshot) } as ProviderInstance["snapshot"],
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: TextGeneration.TextGeneration.of({
+            generateCommitMessage: () => Effect.die("unused"),
+            generatePrContent: () => Effect.die("unused"),
+            generateBranchName: () => Effect.die("unused"),
+            generateReviewGuide: () => Effect.die("unused"),
+            generateThreadTitle: (input) =>
+              Effect.sync(() => {
+                calls.push(input.modelSelection);
+                return { title: "Generated title" };
+              }),
+          }),
+        };
+      },
+    );
     const service = yield* TextGeneration.make.pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -508,7 +525,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
           }),
           ServerSettings.layerTest({
             providerInstances: {
-              [fallback]: { driver: ProviderDriverKind.make("claudeAgent"), config: {} },
+              [fallback]: { driver: ProviderDriverKind.make("gemini"), config: {} },
             },
           }),
           Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
@@ -526,11 +543,10 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
       }),
     ).toEqual({ title: "Generated title" });
     expect(calls).toEqual([
-      exhausted
+      state !== "ready"
         ? {
             instanceId: fallback,
-            model:
-              DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")],
+            model: DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("gemini")],
           }
         : selection,
     ]);

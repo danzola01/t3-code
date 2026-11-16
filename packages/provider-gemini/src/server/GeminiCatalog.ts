@@ -7,6 +7,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Schema from "effect/Schema";
 import { parse as parseToml } from "smol-toml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -14,6 +18,7 @@ import { parse as parseYamlDocument } from "yaml";
 
 import type * as EffectAcpSchema from "effect-acp/compat";
 
+import { discoverGeminiExtensions } from "./GeminiExtensions.ts";
 import { readGeminiDiscoverySettings, resolveGeminiConfigDir } from "./GeminiHome.ts";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
@@ -30,7 +35,7 @@ export interface GeminiCustomCommand {
   readonly description: string;
   readonly prompt: string;
   readonly path: string;
-  readonly scope: "user" | "project";
+  readonly scope: "user" | "project" | "extension";
 }
 
 export interface GeminiCatalog {
@@ -93,7 +98,7 @@ function parseSkillMetadata(contents: string): {
 }
 
 const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* (
-  config: Pick<GeminiSettings, "homePath">,
+  config: Pick<GeminiSettings, "homePath"> & Partial<Pick<GeminiSettings, "launchArgs">>,
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
@@ -101,7 +106,12 @@ const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* (
   const path = yield* Path.Path;
   const configDir = yield* resolveGeminiConfigDir(config, environment);
   const settings = yield* readGeminiDiscoverySettings(config, environment, cwd);
+  const extensions = yield* discoverGeminiExtensions(config, cwd, environment);
   const roots = [
+    ...extensions.map((extension) => ({
+      directory: path.join(extension.directory, "skills"),
+      scope: "extension" as const,
+    })),
     { directory: path.join(configDir, "skills"), scope: "user" as const },
     { directory: path.join(path.dirname(configDir), ".agents", "skills"), scope: "user" as const },
     ...(cwd && settings.workspaceTrusted
@@ -151,7 +161,7 @@ const discoverGeminiSkills = Effect.fn("discoverGeminiSkills")(function* (
 });
 
 export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomCommands")(function* (
-  config: Pick<GeminiSettings, "homePath">,
+  config: Pick<GeminiSettings, "homePath"> & Partial<Pick<GeminiSettings, "launchArgs">>,
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<ReadonlyArray<GeminiCustomCommand>, never, FileSystem.FileSystem | Path.Path> {
@@ -159,10 +169,23 @@ export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomComma
   const path = yield* Path.Path;
   const configDir = yield* resolveGeminiConfigDir(config, environment);
   const settings = yield* readGeminiDiscoverySettings(config, environment, cwd);
+  const extensions = yield* discoverGeminiExtensions(config, cwd, environment);
   const roots = [
+    ...extensions.map((extension) => ({
+      directory: path.join(extension.directory, "commands"),
+      scope: "extension" as const,
+      prefix: `${sanitizeCommandSegment(extension.name)}:`,
+    })),
+    {
+      directory: path.join(path.dirname(configDir), ".agents", "commands"),
+      scope: "user" as const,
+    },
     { directory: path.join(configDir, "commands"), scope: "user" as const },
     ...(cwd && settings.workspaceTrusted
-      ? [{ directory: path.join(cwd, ".gemini", "commands"), scope: "project" as const }]
+      ? [
+          { directory: path.join(cwd, ".agents", "commands"), scope: "project" as const },
+          { directory: path.join(cwd, ".gemini", "commands"), scope: "project" as const },
+        ]
       : []),
   ];
   const commandsByName = new Map<string, GeminiCustomCommand>();
@@ -182,15 +205,19 @@ export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomComma
       if (!definition) continue;
 
       const withoutExtension = relativePath.slice(0, -TOML_EXTENSION.length);
-      const name = withoutExtension
+      const localName = withoutExtension
         .split(/[\\/]/u)
         .map(sanitizeCommandSegment)
         .filter(Boolean)
         .join(":");
-      if (!name) continue;
+      if (!localName) continue;
+      const name = ("prefix" in root ? root.prefix : "") + localName;
       commandsByName.set(name, {
         name,
-        prompt: definition.prompt,
+        prompt:
+          root.scope === "extension"
+            ? definition.prompt.replaceAll("${extensionPath}", () => path.dirname(root.directory))
+            : definition.prompt,
         path: commandPath,
         scope: root.scope,
         description:
@@ -204,7 +231,7 @@ export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomComma
 });
 
 export const discoverGeminiCatalog = Effect.fn("discoverGeminiCatalog")(function* (
-  config: Pick<GeminiSettings, "homePath">,
+  config: Pick<GeminiSettings, "homePath"> & Partial<Pick<GeminiSettings, "launchArgs">>,
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
   nativeCommands: ReadonlyArray<ServerProviderSlashCommand> = GEMINI_ACP_SLASH_COMMANDS,
@@ -257,7 +284,19 @@ const linkGeminiFiles = Effect.fn("linkGeminiFiles")(function* (prompt: string, 
   const path = yield* Path.Path;
   const resources: EffectAcpSchema.ContentBlock[] = [];
   let text = prompt;
-  for (const injection of extractInjections(prompt, "@{").toReversed()) {
+  const braced = extractInjections(prompt, "@{");
+  const bare = [...prompt.matchAll(/(?<![\w@/])@([a-zA-Z0-9_./-]+)/gu)]
+    .filter(
+      (match) =>
+        !braced.some((entry) => match.index >= entry.startIndex && match.index < entry.endIndex),
+    )
+    .map((match) => {
+      const content = match[1]!.replace(/[.]+$/u, "");
+      return { content, startIndex: match.index, endIndex: match.index + content.length + 1 };
+    });
+  for (const injection of [...braced, ...bare].sort(
+    (left, right) => right.startIndex - left.startIndex,
+  )) {
     if (!injection.content) continue;
     // Gemini 0.59 treats the file:// suffix as a path without URI decoding.
     resources.unshift({
@@ -270,20 +309,72 @@ const linkGeminiFiles = Effect.fn("linkGeminiFiles")(function* (prompt: string, 
   return { text, resources };
 });
 
-function preserveShellInjectionsForAgent(prompt: string): string {
-  const injections = extractInjections(prompt, "!{");
-  let result = prompt;
-  for (const injection of injections.toReversed()) {
-    const replacement = [
-      "\n<gemini-custom-command-shell-injection>",
-      "Run this command with your shell tool, subject to the active approval policy, and use its output at this point:",
-      injection.content,
-      "</gemini-custom-command-shell-injection>\n",
-    ].join("\n");
-    result = `${result.slice(0, injection.startIndex)}${replacement}${result.slice(injection.endIndex)}`;
-  }
-  return result;
+function preserveShellInjectionForAgent(command: string): string {
+  return [
+    "\n<gemini-custom-command-shell-injection>",
+    "Run this command with your shell tool, subject to the active approval policy, and use its output at this point:",
+    command,
+    "</gemini-custom-command-shell-injection>\n",
+  ].join("\n");
 }
+
+class GeminiCommandExpansionError extends Schema.TaggedError<GeminiCommandExpansionError>()(
+  "GeminiCommandExpansionError",
+  {
+    commandPath: Schema.String,
+    reason: Schema.Literals(["exit", "timeout", "outputLimit", "process"]),
+    exitCode: Schema.optional(Schema.Number),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Gemini custom-command expansion failed (${this.reason}${this.exitCode === undefined ? "" : `, exit ${this.exitCode}`}). Check the command definition before retrying.`;
+  }
+}
+
+const executeShellInjection = Effect.fn("GeminiCatalog.executeShellInjection")(function* (
+  command: string,
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+  commandPath: string,
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  return yield* Effect.gen(function* () {
+    const child = yield* spawner.spawn(
+      ChildProcess.make("/bin/sh", ["-c", command], {
+        cwd,
+        env: environment,
+        extendEnv: false,
+        stdin: "ignore",
+      }),
+    );
+    const [stdout, exitCode, stderr] = yield* Effect.all(
+      [
+        collectUint8StreamText({ stream: child.stdout, maxBytes: 1024 * 1024 }),
+        child.exitCode,
+        collectUint8StreamText({ stream: child.stderr, maxBytes: 8192 }),
+      ],
+      { concurrency: "unbounded" },
+    );
+    if (Number(exitCode) !== 0 || stdout.truncated)
+      return yield* new GeminiCommandExpansionError({
+        commandPath,
+        reason: Number(exitCode) !== 0 ? "exit" : "outputLimit",
+        exitCode: Number(exitCode),
+        cause: { stderr: stderr.text, truncated: stderr.truncated },
+      });
+    return stdout.text;
+  }).pipe(
+    Effect.scoped,
+    Effect.timeout("5 seconds"),
+    Effect.catchTags({
+      TimeoutError: (cause) =>
+        Effect.fail(new GeminiCommandExpansionError({ commandPath, reason: "timeout", cause })),
+      PlatformError: (cause) =>
+        Effect.fail(new GeminiCommandExpansionError({ commandPath, reason: "process", cause })),
+    }),
+  );
+});
 
 function escapeShellArgument(value: string, platform: NodeJS.Platform): string {
   if (platform === "win32") {
@@ -292,28 +383,55 @@ function escapeShellArgument(value: string, platform: NodeJS.Platform): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+const COMMAND_ARGUMENT_PATTERN = /\{\{args\}\}|\$@|\$([1-9]\d*)/gu;
+
 function substituteCommandArguments(
   prompt: string,
   args: string,
+  shell: boolean,
   platform: NodeJS.Platform,
 ): string {
-  let result = prompt;
-  for (const injection of extractInjections(prompt, "!{").toReversed()) {
-    const resolved = injection.content.replaceAll("{{args}}", escapeShellArgument(args, platform));
-    result = `${result.slice(0, injection.startIndex)}!{${resolved}}${result.slice(injection.endIndex)}`;
-  }
-  return result.replaceAll("{{args}}", args);
+  const tokens = tokenizeCliArgs(args);
+  let quote: "'" | '"' | undefined;
+  let cursor = 0;
+  return prompt.replace(
+    COMMAND_ARGUMENT_PATTERN,
+    (placeholder: string, position: string | undefined, offset: number) => {
+      while (cursor < offset) {
+        const char = prompt[cursor++];
+        if (char === "\\" && quote !== "'") cursor++;
+        else if (char === quote) quote = undefined;
+        else if (!quote && (char === "'" || char === '"')) quote = char;
+      }
+      const escaped = cursor > offset;
+      cursor = offset + placeholder.length;
+      if (shell && escaped) return placeholder;
+      const value = position !== undefined ? (tokens[Number(position) - 1] ?? "") : args;
+      if (!shell) return value;
+      const values = placeholder === "$@" ? tokens : [value];
+      if (platform !== "win32" && quote === "'")
+        return values.map((token) => token.replaceAll("'", `'"'"'`)).join("' '");
+      if (platform !== "win32" && quote === '"')
+        return values.map((token) => token.replace(/[\\"$`]/gu, "\\$&")).join('" "');
+      return values.map((token) => escapeShellArgument(token, platform)).join(" ");
+    },
+  );
 }
 
 export const expandGeminiCustomCommand = Effect.fn("expandGeminiCustomCommand")(function* (
-  config: Pick<GeminiSettings, "homePath">,
+  config: Pick<GeminiSettings, "homePath"> &
+    Partial<Pick<GeminiSettings, "sandbox" | "policyPath" | "launchArgs">>,
   cwd: string,
   input: string,
   environment: NodeJS.ProcessEnv = process.env,
+  runtimePolicy?: Pick<
+    ProviderAdapterV2RuntimePolicy,
+    "runtimeMode" | "interactionMode" | "approvalPolicy" | "sandboxPolicy" | "maxRuntimeMode"
+  >,
 ): Effect.fn.Return<
   { readonly text: string; readonly resources: ReadonlyArray<EffectAcpSchema.ContentBlock> },
-  never,
-  FileSystem.FileSystem | Path.Path
+  GeminiCommandExpansionError,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > {
   const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/u.exec(input.trim());
   if (!match) return { text: input, resources: [] };
@@ -324,15 +442,55 @@ export const expandGeminiCustomCommand = Effect.fn("expandGeminiCustomCommand")(
   );
   if (!command) return { text: input, resources: [] };
 
-  const usesArgs = command.prompt.includes("{{args}}");
   const platform = yield* HostProcess.Platform;
-  const withArguments = usesArgs
-    ? substituteCommandArguments(command.prompt, args, platform)
-    : args
-      ? `${command.prompt}\n\n${input.trim()}`
-      : command.prompt;
-  const linked = yield* linkGeminiFiles(withArguments, cwd);
-  return { ...linked, text: preserveShellInjectionsForAgent(linked.text) };
+  const trust = yield* readGeminiDiscoverySettings(config, environment, cwd);
+  const launchArgs = tokenizeCliArgs(config.launchArgs);
+  // Host expansion cannot enforce Gemini's sandbox or policy engine.
+  const extensions = yield* discoverGeminiExtensions(config, cwd, environment);
+  const canExecute =
+    extensions.length === 0 &&
+    trust.workspaceTrusted &&
+    !trust.requiresNativeShellExecution &&
+    platform !== "win32" &&
+    runtimePolicy?.runtimeMode === "full-access" &&
+    runtimePolicy.interactionMode !== "plan" &&
+    (runtimePolicy.maxRuntimeMode === undefined ||
+      runtimePolicy.maxRuntimeMode === "full-access") &&
+    runtimePolicy.approvalPolicy === undefined &&
+    runtimePolicy.sandboxPolicy === undefined &&
+    !config.sandbox &&
+    !config.policyPath?.trim() &&
+    !environment.GEMINI_SANDBOX &&
+    !environment.SANDBOX &&
+    !launchArgs.some((arg) =>
+      ["-s", "--sandbox", "--policy", "--admin-policy", "--approval-mode", "--yolo", "-y"].some(
+        (flag) => arg === flag || arg.startsWith(`${flag}=`),
+      ),
+    );
+  let cursor = 0;
+  let expanded = "";
+  // Parse the template before substitution so arguments and stdout cannot introduce executable blocks.
+  for (const injection of extractInjections(command.prompt, "!{")) {
+    expanded += substituteCommandArguments(
+      command.prompt.slice(cursor, injection.startIndex),
+      args,
+      false,
+      platform,
+    );
+    const shellCommand = substituteCommandArguments(injection.content, args, true, platform);
+    const hasArguments = /\{\{args\}\}|\$@|\$[1-9]\d*/u.test(injection.content);
+    const hasNestedShellSyntax = /`|\$\(|<</u.test(injection.content);
+    const output =
+      canExecute && !(hasArguments && hasNestedShellSyntax)
+        ? yield* executeShellInjection(shellCommand, cwd, environment, command.path)
+        : undefined;
+    expanded += output ?? preserveShellInjectionForAgent(shellCommand);
+    cursor = injection.endIndex;
+  }
+  expanded += substituteCommandArguments(command.prompt.slice(cursor), args, false, platform);
+  if (!/\{\{args\}\}|\$@|\$[1-9]\d*/u.test(command.prompt) && args)
+    expanded += `\n\n${input.trim()}`;
+  return yield* linkGeminiFiles(expanded, cwd);
 });
 
 function escapeRegExp(value: string): string {
@@ -340,7 +498,7 @@ function escapeRegExp(value: string): string {
 }
 
 export const expandGeminiSkillMentions = Effect.fn("expandGeminiSkillMentions")(function* (
-  config: Pick<GeminiSettings, "homePath">,
+  config: Pick<GeminiSettings, "homePath"> & Partial<Pick<GeminiSettings, "launchArgs">>,
   cwd: string,
   input: string,
   environment: NodeJS.ProcessEnv = process.env,

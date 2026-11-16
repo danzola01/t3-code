@@ -38,6 +38,26 @@ describe("fallbackTextGenerationModelSelection", () => {
     ).toEqual({ instanceId: "opencode", model: "opencode/big-pickle" });
   });
 
+  it("selects a healthy Gemini default or configured instance when other providers are unavailable", () => {
+    const driver = ProviderDriverKind.make("gemini");
+    expect(fallbackTextGenerationModelSelection({}, (id) => id === "gemini")).toEqual({
+      instanceId: "gemini",
+      model: "auto",
+    });
+    const instanceId = ProviderInstanceId.make("gemini_work");
+    const instances = { [instanceId]: { driver, enabled: true, config: {} } };
+    expect(
+      fallbackTextGenerationModelSelection(instances, (id) => id === instanceId, {
+        includeConfiguredInstances: true,
+      })?.instanceId,
+    ).toBe(instanceId);
+    expect(
+      fallbackTextGenerationModelSelection(instances, () => false, {
+        includeConfiguredInstances: true,
+      }),
+    ).toBeNull();
+  });
+
   it("replaces and clears the fallback without carrying model options", () => {
     const fallbackModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "new" };
     const settings = applyServerSettingsPatch(

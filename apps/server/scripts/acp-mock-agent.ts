@@ -17,6 +17,7 @@ import type * as AcpCompat from "effect-acp/compat";
 import { beginAcpMockPrompt } from "./acpMockCancellationState.ts";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
+const geminiProfile = process.env.T3_ACP_GEMINI === "1";
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
 // GitHub Copilot CLI advertises URL-shaped session mode ids.
 const copilotModesProfile = process.env.T3_ACP_COPILOT_MODES === "1";
@@ -83,11 +84,15 @@ const permissionOptionIds = {
 };
 const sessionId = "mock-session-1";
 
-let currentModeId = antigravityProfile
-  ? "default"
-  : copilotModesProfile
-    ? copilotModeId("agent")
-    : "ask";
+let currentModeId = geminiProfile
+  ? process.argv.includes("plan")
+    ? "plan"
+    : "default"
+  : antigravityProfile
+    ? "default"
+    : copilotModesProfile
+      ? copilotModeId("agent")
+      : "ask";
 let currentModelId = antigravityProfile ? "gemini-test-low" : "default";
 let parameterizedModelPicker = false;
 let currentReasoning = "medium";
@@ -335,35 +340,42 @@ const antigravityModels = [
   { modelId: "gemini-test-high", name: "Gemini Test High" },
 ] satisfies ReadonlyArray<AcpCompat.ModelInfo>;
 
-const availableModes: ReadonlyArray<AcpCompat.SessionMode> = antigravityProfile
+const availableModes: ReadonlyArray<AcpCompat.SessionMode> = geminiProfile
   ? [
       { id: "default", name: "Default" },
-      { id: "auto_edit", name: "Auto edit" },
+      { id: "autoEdit", name: "Auto edit" },
       { id: "yolo", name: "YOLO" },
+      { id: "plan", name: "Plan" },
     ]
-  : copilotModesProfile
+  : antigravityProfile
     ? [
-        { id: copilotModeId("agent"), name: "Agent" },
-        { id: copilotModeId("plan"), name: "Plan" },
-        { id: copilotModeId("autopilot"), name: "Autopilot" },
+        { id: "default", name: "Default" },
+        { id: "auto_edit", name: "Auto edit" },
+        { id: "yolo", name: "YOLO" },
       ]
-    : [
-        {
-          id: "ask",
-          name: "Ask",
-          description: "Request permission before making any changes",
-        },
-        {
-          id: "architect",
-          name: "Architect",
-          description: "Design and plan software systems without implementation",
-        },
-        {
-          id: "code",
-          name: "Code",
-          description: "Write and modify code with full tool access",
-        },
-      ];
+    : copilotModesProfile
+      ? [
+          { id: copilotModeId("agent"), name: "Agent" },
+          { id: copilotModeId("plan"), name: "Plan" },
+          { id: copilotModeId("autopilot"), name: "Autopilot" },
+        ]
+      : [
+          {
+            id: "ask",
+            name: "Ask",
+            description: "Request permission before making any changes",
+          },
+          {
+            id: "architect",
+            name: "Architect",
+            description: "Design and plan software systems without implementation",
+          },
+          {
+            id: "code",
+            name: "Code",
+            description: "Write and modify code with full tool access",
+          },
+        ];
 
 function modeState(): AcpCompat.SessionModeState {
   return {

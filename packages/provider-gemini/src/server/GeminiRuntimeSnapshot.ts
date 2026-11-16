@@ -14,8 +14,23 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Acp from "effect-acp/compat";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import type { AcpSessionRuntimeStartResult } from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { createModelCapabilities } from "@t3tools/shared/model";
+import {
+  findModelConfigOption,
+  parseSessionModeState,
+  type AcpSessionModeState,
+} from "@t3tools/provider-acp/server/runtimeModel";
+import {
+  acpProviderOptionDescriptors,
+  flattenSelectChoices,
+} from "@t3tools/provider-acp/server/sessionConfig";
 import { buildGeminiDiscoveredModelsFromSessionModelState } from "./GeminiProvider.ts";
 import { discoverGeminiCatalog } from "./GeminiCatalog.ts";
+
+interface GeminiNativeConfiguration {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly supportsPlan: boolean;
+}
 
 export const makeGeminiRuntimeSnapshot = Effect.fn("makeGeminiRuntimeSnapshot")(function* (
   settings: GeminiSettings,
@@ -26,9 +41,42 @@ export const makeGeminiRuntimeSnapshot = Effect.fn("makeGeminiRuntimeSnapshot")(
   const workspaces = yield* SubscriptionRef.make<ReadonlyArray<ServerProviderWorkspaceSnapshot>>(
     [],
   );
-  const models = yield* SubscriptionRef.make<ReadonlyArray<ServerProviderModel> | undefined>(
+  const configuration = yield* SubscriptionRef.make<GeminiNativeConfiguration | undefined>(
     undefined,
   );
+  const onSessionConfigurationUpdate = Effect.fn(
+    "GeminiRuntimeSnapshot.onSessionConfigurationUpdate",
+  )(function* (
+    configOptions: ReadonlyArray<Acp.SessionConfigOption>,
+    modeState: AcpSessionModeState | undefined,
+    modelState: Acp.SessionModelState | null | undefined,
+  ) {
+    const modelOption = findModelConfigOption(configOptions);
+    const resolvedModelState = modelOption
+      ? {
+          currentModelId: modelOption.currentValue,
+          availableModels: flattenSelectChoices(modelOption.options).map((model) => ({
+            modelId: model.value,
+            name: model.name,
+          })),
+        }
+      : modelState;
+    const capabilities = createModelCapabilities({
+      optionDescriptors: acpProviderOptionDescriptors({ configOptions, modeState }),
+    });
+    const models = buildGeminiDiscoveredModelsFromSessionModelState(resolvedModelState).map(
+      (model) => ({ ...model, capabilities }),
+    );
+    const supportsPlan =
+      modeState?.availableModes.some((mode) => mode.id === "plan") === true ||
+      configOptions.some(
+        (option) =>
+          option.type === "select" &&
+          (option.category === "mode" || option.category === "collaboration_mode") &&
+          flattenSelectChoices(option.options).some((choice) => choice.value === "plan"),
+      );
+    yield* SubscriptionRef.set(configuration, { models, supportsPlan });
+  });
   const commandsByCwd = new Map<string, ReadonlyArray<ServerProviderSlashCommand>>();
   const discover = Effect.fn(function* (cwd: string) {
     const catalog = yield* discoverGeminiCatalog(
@@ -65,17 +113,18 @@ export const makeGeminiRuntimeSnapshot = Effect.fn("makeGeminiRuntimeSnapshot")(
   const merge = (
     snapshot: ServerProvider,
     entries: ReadonlyArray<ServerProviderWorkspaceSnapshot>,
-    nativeModels: ReadonlyArray<ServerProviderModel> | undefined,
+    native: GeminiNativeConfiguration | undefined,
   ): ServerProvider => ({
     ...snapshot,
     workspaceSnapshots: entries,
-    ...(nativeModels?.length
+    ...(native === undefined ? {} : { showInteractionModeToggle: native.supportsPlan }),
+    ...(native?.models.length
       ? {
           models: [
-            ...nativeModels,
+            ...native.models,
             ...snapshot.models.filter(
               (model) =>
-                model.isCustom && !nativeModels.some((native) => native.slug === model.slug),
+                model.isCustom && !native.models.some((native) => native.slug === model.slug),
             ),
           ],
         }
@@ -83,19 +132,30 @@ export const makeGeminiRuntimeSnapshot = Effect.fn("makeGeminiRuntimeSnapshot")(
   });
   return {
     onAvailableCommands,
+    onSessionConfigurationUpdate,
     onSessionStarted: (started: AcpSessionRuntimeStartResult) =>
-      SubscriptionRef.set(
-        models,
-        buildGeminiDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models),
+      onSessionConfigurationUpdate(
+        started.sessionSetupResult.configOptions ?? [],
+        parseSessionModeState(started.sessionSetupResult),
+        started.sessionSetupResult.models,
       ),
-    snapshotForCwd: (snapshot: ServerProvider, cwd: string) =>
-      discover(cwd).pipe(Effect.map((catalog) => ({ ...snapshot, ...catalog }))),
+    snapshotForCwd: Effect.fn("GeminiRuntimeSnapshot.snapshotForCwd")(function* (
+      snapshot: ServerProvider,
+      cwd: string,
+    ) {
+      const catalog = yield* discover(cwd);
+      return merge(
+        { ...snapshot, ...catalog },
+        yield* SubscriptionRef.get(workspaces),
+        yield* SubscriptionRef.get(configuration),
+      );
+    }),
     wrap: (snapshot: ManagedServerProvider): ManagedServerProvider => ({
       ...snapshot,
       getSnapshot: Effect.all([
         snapshot.getSnapshot,
         SubscriptionRef.get(workspaces),
-        SubscriptionRef.get(models),
+        SubscriptionRef.get(configuration),
       ]).pipe(
         Effect.map(([current, entries, nativeModels]) => merge(current, entries, nativeModels)),
       ),
@@ -106,13 +166,13 @@ export const makeGeminiRuntimeSnapshot = Effect.fn("makeGeminiRuntimeSnapshot")(
         return merge(
           current,
           yield* SubscriptionRef.get(workspaces),
-          yield* SubscriptionRef.get(models),
+          yield* SubscriptionRef.get(configuration),
         );
       }),
       streamChanges: Stream.zipLatestAll(
         snapshot.streamChanges,
         SubscriptionRef.changes(workspaces),
-        SubscriptionRef.changes(models),
+        SubscriptionRef.changes(configuration),
       ).pipe(
         Stream.map(([current, entries, nativeModels]) => merge(current, entries, nativeModels)),
       ),

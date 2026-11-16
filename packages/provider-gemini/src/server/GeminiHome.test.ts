@@ -48,6 +48,31 @@ it.layer(NodeServices.layer)("Gemini settings compatibility", (it) => {
   );
 
   it.effect(
+    "applies structured workspace trust to discovery while keeping explicit restrictions",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.write("project/.agents/commands/review.toml", 'prompt = "Review"');
+        const environment = yield* makeGeminiEnvironment(
+          { homePath: f.home, skipTrust: true },
+          f.environment,
+        );
+        const catalog = yield* discoverGeminiCatalog({ homePath: f.home }, f.cwd, environment);
+        assert.isTrue(catalog.slashCommands.some((command) => command.name === "review"));
+        const restricted = yield* discoverGeminiCatalog({ homePath: f.home }, f.cwd, {
+          ...environment,
+          GEMINI_RESTRICTED_MODE: "true",
+        });
+        assert.isFalse(restricted.slashCommands.some((command) => command.name === "review"));
+        const rawOverride = yield* makeGeminiEnvironment(
+          { homePath: f.home, skipTrust: true, launchArgs: "--skip-trust=false" },
+          f.environment,
+        );
+        assert.isUndefined(rawOverride.GEMINI_CLI_TRUST_WORKSPACE);
+      }),
+  );
+
+  it.effect(
     "preserves commented authentication and merges disabled skills across trusted settings",
     () =>
       Effect.gen(function* () {
@@ -72,6 +97,30 @@ it.layer(NodeServices.layer)("Gemini settings compatibility", (it) => {
         assert.isFalse(settings.skillsEnabled);
         assert.sameMembers([...settings.disabledSkills], ["default", "user", "project", "system"]);
       }),
+  );
+
+  it.effect("preserves discovery settings and requires native execution for sandbox variants", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      for (const sandbox of [
+        { tools: { sandbox: { enabled: true, command: "docker" } } },
+        { security: { toolSandboxing: true } },
+        { tools: { sandbox: { futureSandboxSetting: true } } },
+      ]) {
+        yield* f.write(
+          "home/.gemini/settings.json",
+          encodeJson({ ...sandbox, skills: { enabled: false, disabled: ["review"] } }),
+        );
+        const settings = yield* readGeminiDiscoverySettings(
+          { homePath: f.home },
+          f.environment,
+          f.cwd,
+        );
+        assert.isFalse(settings.skillsEnabled);
+        assert.isTrue(settings.disabledSkills.has("review"));
+        assert.isTrue(settings.requiresNativeShellExecution);
+      }
+    }),
   );
 
   it.effect(

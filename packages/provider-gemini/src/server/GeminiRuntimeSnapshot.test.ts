@@ -111,11 +111,60 @@ it.layer(NodeServices.layer)("Gemini runtime snapshots", (it) => {
             },
           },
         });
+        yield* runtime.onSessionConfigurationUpdate(
+          [
+            {
+              id: "model",
+              category: "model",
+              type: "select",
+              name: "Model",
+              currentValue: "gemini-v2",
+              options: [{ value: "gemini-v2", name: "Gemini v2" }],
+            },
+            {
+              id: "thinking",
+              category: "thought_level",
+              type: "select",
+              name: "Thinking",
+              currentValue: "high",
+              options: [
+                { value: "low", name: "Low" },
+                { value: "high", name: "High" },
+              ],
+            },
+          ],
+          {
+            currentModeId: "default",
+            availableModes: [
+              { id: "default", name: "Default" },
+              { id: "plan", name: "Plan" },
+            ],
+          },
+          undefined,
+        );
         const updated = yield* snapshot.getSnapshot;
         assert.sameMembers(
           updated.models.map((model) => model.slug),
-          ["auto", "gemini-test", "company-model"],
+          ["gemini-v2", "company-model"],
         );
+        assert.isTrue(updated.showInteractionModeToggle);
+        assert.isTrue(
+          updated.models.some((model) =>
+            model.capabilities?.optionDescriptors?.some(
+              (option) =>
+                option.id === "thinking" &&
+                option.type === "select" &&
+                option.currentValue === "high",
+            ),
+          ),
+        );
+        yield* runtime.onSessionConfigurationUpdate(
+          [],
+          { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] },
+          { currentModelId: "auto", availableModels: [{ modelId: "auto", name: "Auto" }] },
+        );
+        assert.isFalse((yield* snapshot.getSnapshot).showInteractionModeToggle);
+        assert.isFalse((yield* runtime.snapshotForCwd(base, cwd)).showInteractionModeToggle);
         yield* fs.remove(path.join(cwd, ".gemini", "commands", "review.toml"));
         const refreshed = yield* snapshot.refresh;
         assert.isFalse(

@@ -44,8 +44,14 @@ This is the right place for company-specific Vertex AI, API-key, gateway, or pro
 ## Trust And Permission Modes
 
 Gemini CLI's trusted-folder checks remain active. If a project is not trusted, trust it with Gemini
-CLI before starting the thread. You can add `--skip-trust` under **Launch arguments**, but doing so
-explicitly disables that protection for the instance.
+CLI before starting the thread. Enable **Skip workspace trust check** on the provider instance
+only when you want every project opened by that instance to be trusted automatically.
+
+Enable **Enable sandbox** to isolate Gemini's tool execution, and use **Policy path** to load a
+Gemini policy file or directory. Existing options in **Launch arguments** take precedence over
+these instance settings. Plan mode starts Gemini in its native read-only approval mode and
+returns to the thread's build permission mode when you leave the plan. T3 Code's permission mode
+also overrides permissive approval flags in **Launch arguments** when starting or continuing a session.
 
 T3 Code maps Gemini ACP tool permission requests into the same approval UI used by other providers.
 Full Access automatically selects an allow option when Gemini offers one; other modes continue to
@@ -82,22 +88,34 @@ Disabled skills in Gemini's user, trusted-project, and system settings stay disa
 Gemini to load it through the `activate_skill` tool.
 
 TOML commands under `$GEMINI_CLI_HOME/.gemini/commands` (or `~/.gemini/commands` when no custom
-home is set) and the project's `.gemini/commands` directory work from the composer. Project
-definitions override user definitions, and nested paths use Gemini's colon naming convention, such
-as `/git:commit`.
+home is set) and the project's `.gemini/commands` directory work from the composer. T3 Code also
+reads `.agents/commands` from the active home and trusted project. Project definitions override
+user definitions; `.gemini/commands` overrides `.agents/commands` at the same level. Nested paths
+use Gemini's colon naming convention, such as `/git:commit`.
 
 The command picker uses commands advertised by the running CLI alongside local TOML commands.
-The command bridge supports `{{args}}`, default raw-invocation appending, and `@{path}` file
-references. Gemini resolves file references using its own ignore rules and access checks.
-A `!{command}` block asks Gemini to run its shell tool under the thread's approval policy; it is
-not guaranteed shell-output substitution before the model runs. Extension-provided skills and
-prompt commands are not yet fully represented in T3's picker.
+Use `{{args}}` or `$@` for all arguments, or `$1`, `$2`, and so on for individual arguments;
+quoted arguments stay together. Commands without placeholders receive the full invocation at the
+end. Both `@{path}` and bare `@path` add file references, which Gemini resolves using its own
+ignore rules and access checks.
+
+In a trusted Full Access session on macOS or Linux, `!{command}` inserts local shell output
+before the prompt is sent. A failed command, excessive output, or a five-second timeout stops
+submission. Check the command before explicitly retrying; T3 Code does not ask the agent to repeat
+an attempted command. Sessions requiring approvals, sandboxing, custom policies, or active extensions,
+and Windows sessions, use Gemini's shell tool directly. Templates combining argument placeholders with nested shell syntax also use the
+tool.
+
+Skills and TOML commands from enabled installed or linked Gemini extensions also appear in the
+picker. Extension commands use an explicit prefix, such as `/reviewer:review`, so project commands
+keep their names. Workspace extension enablement and the instance's `--extensions` selection apply.
+Model configuration controls advertised by the running CLI update as the session changes.
 
 Sending a follow-up while Gemini is working cancels and drains the current native prompt before
 continuing the same T3 turn. Stop also waits for cancellation before another turn can start.
 
-Plan mode, structured question forms, provider-side conversation rollback, and manual context
-compaction are not currently integrated for Gemini. File checkpoint restoration does not rewind
+Structured question forms, provider-side conversation rollback, and manual context compaction
+are not currently integrated for Gemini. File checkpoint restoration does not rewind
 Gemini's conversation history.
 
 ## Workflows

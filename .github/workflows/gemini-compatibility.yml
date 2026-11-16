@@ -1,0 +1,51 @@
+name: Gemini compatibility
+
+on:
+  pull_request:
+    paths:
+      - "packages/provider-gemini/**"
+      - "packages/provider-acp/**"
+      - "packages/effect-acp/**"
+      - "packages/provider-core/**"
+      - "packages/contracts/**"
+      - "packages/shared/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/gemini-compatibility.yml"
+      - ".github/actions/setup-ci-deps/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-compatibility-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["0.59.0", "0.64.0"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Install pinned Gemini CLI
+        env:
+          GEMINI_VERSION: ${{ matrix.version }}
+        run: npm install --prefix "$RUNNER_TEMP/gemini-cli" --no-audit --no-fund "@google/gemini-cli@$GEMINI_VERSION"
+      - name: Test against local model fixture
+        env:
+          GEMINI_CLI_VERSION: ${{ matrix.version }}
+        run: GEMINI_CLI_BIN="$RUNNER_TEMP/gemini-cli/node_modules/.bin/gemini" vp test run packages/provider-gemini/src/server/GeminiCli.live.test.ts

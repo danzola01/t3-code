@@ -42,6 +42,29 @@ export const GeminiSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    sandbox: Schema.optional(Schema.Boolean).pipe(
+      Schema.annotateKey({
+        title: "Enable sandbox",
+        description: "Run Gemini CLI tools in sandbox mode (-s).",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+    skipTrust: Schema.optional(Schema.Boolean).pipe(
+      Schema.annotateKey({
+        title: "Skip workspace trust check",
+        description:
+          "Automatically trust project directories without terminal confirmation (--skip-trust).",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+    policyPath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Policy path",
+        description: "Optional path to a Gemini policy file or directory.",
+        providerSettingsForm: { placeholder: "path/to/policy.toml", clearWhenEmpty: "omit" },
+      }),
+    ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -60,7 +83,15 @@ export const GeminiSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "authMethod", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "authMethod",
+      "sandbox",
+      "skipTrust",
+      "policyPath",
+      "launchArgs",
+    ],
   },
 );
 export type GeminiSettings = typeof GeminiSettings.Type;

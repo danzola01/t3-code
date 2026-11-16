@@ -12,8 +12,14 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 const GeminiDiscoverySettings = Schema.Struct({
+  tools: Schema.optional(Schema.Struct({ sandbox: Schema.optional(Schema.Unknown) })),
+  policyPaths: Schema.optional(Schema.Array(Schema.String)),
+  adminPolicyPaths: Schema.optional(Schema.Array(Schema.String)),
   security: Schema.optional(
     Schema.Struct({
+      toolSandboxing: Schema.optional(Schema.Unknown),
+      allowedExtensions: Schema.optional(Schema.Array(Schema.String)),
+      blockGitExtensions: Schema.optional(Schema.Boolean),
       folderTrust: Schema.optional(Schema.Struct({ enabled: Schema.optional(Schema.Boolean) })),
       auth: Schema.optional(
         Schema.Struct({
@@ -29,6 +35,7 @@ const GeminiDiscoverySettings = Schema.Struct({
     }),
   ),
 });
+const nativeOnlySettings = GeminiDiscoverySettings.make({ tools: { sandbox: true } });
 const decodeGeminiSettings = Schema.decodeUnknownOption(fromLenientJson(GeminiDiscoverySettings));
 
 export const resolveGeminiConfigDir = Effect.fn("resolveGeminiConfigDir")(function* (
@@ -90,8 +97,13 @@ export const readGeminiDiscoverySettings = Effect.fn("readGeminiDiscoverySetting
   ];
   const readSettings = (file: string) =>
     fileSystem.readFileString(file).pipe(
-      Effect.map((contents) => Option.getOrUndefined(decodeGeminiSettings(contents))),
-      Effect.orElseSucceed(() => undefined),
+      Effect.map(
+        (contents) => Option.getOrUndefined(decodeGeminiSettings(contents)) ?? nativeOnlySettings,
+      ),
+      Effect.catchTags({
+        PlatformError: (error) =>
+          Effect.succeed(error.reason._tag === "NotFound" ? undefined : nativeOnlySettings),
+      }),
     );
   const layers = yield* Effect.forEach(files, readSettings);
   const folderTrustEnabled = layers.reduce(
@@ -112,7 +124,41 @@ export const readGeminiDiscoverySettings = Effect.fn("readGeminiDiscoverySetting
     skillsEnabled = settings?.skills?.enabled ?? skillsEnabled;
     for (const name of settings?.skills?.disabled ?? []) disabledSkills.add(name);
   }
-  return { selectedAuthMethod, skillsEnabled, disabledSkills, workspaceTrusted };
+  const policyDirectories = [
+    path.join(configDir, "policies"),
+    path.join(path.dirname(systemPath), "policies"),
+    ...(cwd && workspaceTrusted ? [path.join(cwd, ".gemini", "policies")] : []),
+  ];
+  const policyFiles = yield* Effect.forEach(policyDirectories, (directory) =>
+    fileSystem.readDirectory(directory).pipe(
+      Effect.map((entries) => entries.some((entry) => entry.endsWith(".toml"))),
+      Effect.orElseSucceed(() => false),
+    ),
+  );
+  const requiresNativeShellExecution =
+    policyFiles.some(Boolean) ||
+    layers.some(
+      (settings) =>
+        Boolean(settings?.tools?.sandbox) ||
+        Boolean(settings?.security?.toolSandboxing) ||
+        (settings?.policyPaths?.length ?? 0) > 0 ||
+        (settings?.adminPolicyPaths?.length ?? 0) > 0,
+    );
+  return {
+    selectedAuthMethod,
+    skillsEnabled,
+    disabledSkills,
+    workspaceTrusted,
+    requiresNativeShellExecution,
+    allowedExtensions: layers.reduce<ReadonlyArray<string>>(
+      (value, settings) => settings?.security?.allowedExtensions ?? value,
+      [],
+    ),
+    blockGitExtensions: layers.reduce(
+      (value, settings) => settings?.security?.blockGitExtensions ?? value,
+      false,
+    ),
+  };
 });
 
 const decodeTrustedFolders = Schema.decodeUnknownOption(
@@ -173,10 +219,16 @@ const isGeminiWorkspaceTrusted = Effect.fn("isGeminiWorkspaceTrusted")(function*
 });
 
 export const makeGeminiEnvironment = Effect.fn("makeGeminiEnvironment")(function* (
-  config: Pick<GeminiSettings, "homePath"> & Partial<Pick<GeminiSettings, "launchArgs">>,
+  config: Pick<GeminiSettings, "homePath"> &
+    Partial<Pick<GeminiSettings, "launchArgs" | "skipTrust">>,
   baseEnv?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
-  const resolvedBaseEnv = tokenizeCliArgs(config.launchArgs).includes("--skip-trust")
+  const skipTrustArg = tokenizeCliArgs(config.launchArgs).findLast(
+    (arg) => arg === "--skip-trust" || arg.startsWith("--skip-trust="),
+  );
+  const skipTrust =
+    skipTrustArg === undefined ? config.skipTrust : skipTrustArg !== "--skip-trust=false";
+  const resolvedBaseEnv = skipTrust
     ? { ...(baseEnv ?? process.env), GEMINI_CLI_TRUST_WORKSPACE: "true" }
     : (baseEnv ?? process.env);
   const processEnv = isOutboundTelemetryDisabled(resolvedBaseEnv.T3CODE_DISABLE_TELEMETRY)

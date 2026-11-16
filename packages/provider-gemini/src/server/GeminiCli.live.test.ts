@@ -208,6 +208,15 @@ for await (const line of lines) {
         const started = yield* runtime.start();
         assert.equal(started.initializeResult.protocolVersion, 1);
         assert.isNotEmpty(started.sessionId);
+        for (const mode of ["autoEdit", "default"]) {
+          yield* runtime.setMode(mode);
+          assert.equal((yield* runtime.getModeState)?.currentModeId, mode);
+        }
+        if ((yield* runtime.getModeState)?.availableModes.some((mode) => mode.id === "plan")) {
+          yield* runtime.setMode("plan");
+          assert.equal((yield* runtime.getModeState)?.currentModeId, "plan");
+          yield* runtime.setMode("default");
+        }
         const available = started.sessionSetupResult.models?.availableModels ?? [];
         const selected =
           available.find(
@@ -326,6 +335,5 @@ for await (const line of lines) {
           .pipe(Effect.flip);
         assert.equal(retired._tag, "AcpTransportError");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    60_000,
   );
 });

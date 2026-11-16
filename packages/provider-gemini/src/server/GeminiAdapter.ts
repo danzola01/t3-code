@@ -15,7 +15,11 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
-import { AcpProviderCapabilitiesV2, makeAcpAdapterV2 } from "@t3tools/provider-acp/server/adapter";
+import {
+  AcpProviderCapabilitiesV2,
+  makeAcpAdapterV2,
+  type AcpAdapterV2Flavor,
+} from "@t3tools/provider-acp/server/adapter";
 import type { AcpToolCallState } from "@t3tools/provider-acp/server/runtimeModel";
 import { makeAcpNativeLoggerFactory } from "@t3tools/provider-acp/server/nativeLogging";
 import type { AcpSessionRuntimeStartResult } from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -24,7 +28,12 @@ import {
   makeGeminiAcpRuntime,
   resolveGeminiAcpBaseModelId,
 } from "./GeminiAcpSupport.ts";
-import { geminiApprovalOptions, geminiPermissionOptionId } from "./GeminiPermissions.ts";
+import {
+  geminiApprovalOptions,
+  geminiPermissionOptionId,
+  geminiSessionModeForPolicy,
+  geminiRuntimeModeForSessionMode,
+} from "./GeminiPermissions.ts";
 import { expandGeminiCustomCommand, expandGeminiSkillMentions } from "./GeminiCatalog.ts";
 const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
 const decodeUnknownJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -120,6 +129,8 @@ export function normalizeGeminiMcpToolCall(
   };
 }
 
+export const geminiCapacityRetrySchedule = Schedule.exponential("1 second").pipe(Schedule.jittered);
+
 export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
   settings: GeminiSettings,
   options: {
@@ -130,6 +141,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
       cwd: string,
     ) => Effect.Effect<void>;
+    readonly onSessionConfigurationUpdate?: AcpAdapterV2Flavor["onSessionConfigurationUpdate"];
     readonly onSessionStarted?: (started: AcpSessionRuntimeStartResult) => Effect.Effect<void>;
   },
 ) {
@@ -163,15 +175,29 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
             : {}),
           class: "provider_error",
         }),
-      prepareMessage: Effect.fn("GeminiAdapter.prepareMessage")(function* ({ text, cwd }) {
+      prepareMessage: Effect.fn("GeminiAdapter.prepareMessage")(function* ({
+        text,
+        cwd,
+        runtimePolicy,
+      }) {
         const expanded = yield* expandGeminiCustomCommand(
           settings,
           cwd,
           text,
           options.environment,
+          runtimePolicy,
         ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectAcpErrors.AcpRequestError({
+                code: -32602,
+                errorMessage: cause.message,
+                cause,
+              }),
+          ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         );
         const prepared = yield* expandGeminiSkillMentions(
           settings,
@@ -188,9 +214,14 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
         ...AcpProviderCapabilitiesV2,
         tools: { ...AcpProviderCapabilitiesV2.tools, supportsMcpTools: true },
       },
+      ...(options.onSessionConfigurationUpdate
+        ? { onSessionConfigurationUpdate: options.onSessionConfigurationUpdate }
+        : {}),
       normalizeToolCall: normalizeGeminiMcpToolCall,
       approvalOptions: geminiApprovalOptions,
       permissionOptionId: geminiPermissionOptionId,
+      sessionModeForPolicy: geminiSessionModeForPolicy,
+      runtimeModeForSessionMode: geminiRuntimeModeForSessionMode,
       supportsImagePrompts: true,
       supportsCompaction: true,
       resolveModelId: (selection) => resolveGeminiAcpBaseModelId(selection.model),
@@ -251,7 +282,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
               Effect.retry({
                 times: 2,
                 while: (error) => /no capacity available|model is overloaded/iu.test(error.message),
-                schedule: Schedule.spaced("1 second"),
+                schedule: geminiCapacityRetrySchedule,
               }),
             );
             return response;

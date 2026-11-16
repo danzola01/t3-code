@@ -275,10 +275,14 @@ export interface AcpAdapterV2Flavor {
   readonly prepareMessage?: (input: {
     readonly text: string;
     readonly cwd: string;
-  }) => Effect.Effect<{
-    readonly text: string;
-    readonly resources: ReadonlyArray<EffectAcpSchema.ContentBlock>;
-  }>;
+    readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+  }) => Effect.Effect<
+    {
+      readonly text: string;
+      readonly resources: ReadonlyArray<EffectAcpSchema.ContentBlock>;
+    },
+    EffectAcpErrors.AcpError
+  >;
   readonly buildPrompt?: (input: {
     readonly text: string;
     readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -6896,6 +6900,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }
         });
 
+        let activeConfiguredRuntimePolicy:
+          | ProviderAdapter.ProviderAdapterV2RuntimePolicy
+          | undefined;
         const configureSession = Effect.fnUntraced(function* (
           startResult: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           modelSelection: ModelSelection,
@@ -6972,7 +6979,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const configOptions = yield* runtime.getConfigOptions;
           // Under a policy ceiling, a mode the user picks applies only when the flavor can place
           // it under the ceiling; an unknown mode could be the agent's own skip-approval mode.
-          const ceiling = runtimePolicy.maxRuntimeMode;
+          const ceiling =
+            flavor.runtimeModeForSessionMode === undefined
+              ? runtimePolicy.maxRuntimeMode
+              : isRuntimeModeAbove(runtimePolicy.runtimeMode, runtimePolicy.maxRuntimeMode)
+                ? runtimePolicy.maxRuntimeMode
+                : runtimePolicy.runtimeMode;
           const isModeChoice = (id: string) =>
             id === ACP_SESSION_MODE_OPTION_ID ||
             configOptions.some(
@@ -7046,7 +7058,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             );
           }
           const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
-          if (policyMode !== undefined) {
+          if (
+            policyMode !== undefined &&
+            (yield* runtime.getModeState)?.currentModeId !== policyMode
+          ) {
             yield* runtime.setMode(policyMode);
           }
           const modeState = yield* runtime.getModeState;
@@ -7101,7 +7116,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const nativeBuild = nativeBuildConfigurationBySessionId.get(startResult.sessionId);
             if (nativeBuild !== undefined) {
               if (
+                policyMode === undefined &&
                 nativeBuild.modeId !== undefined &&
+                withinCeiling({ id: ACP_SESSION_MODE_OPTION_ID, value: nativeBuild.modeId }) &&
                 effectiveModeState?.currentModeId !== nativeBuild.modeId &&
                 effectiveModeState?.availableModes.some(
                   (mode) => mode.id === nativeBuild.modeId,
@@ -7114,16 +7131,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   (candidate) => candidate.type === "select" && candidate.id === saved.id,
                 );
                 if (option === undefined || option.type !== "select") continue;
+                if (policyMode !== undefined && option.category === "mode") continue;
                 const choices = option.options.flatMap((entry) =>
                   "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
                 );
-                if (option.currentValue !== saved.value && choices.includes(saved.value)) {
+                if (
+                  withinCeiling({ id: saved.id, value: saved.value }) &&
+                  option.currentValue !== saved.value &&
+                  choices.includes(saved.value)
+                ) {
                   yield* runtime.setConfigOption(option.id, saved.value);
                 }
               }
               nativeBuildConfigurationBySessionId.delete(startResult.sessionId);
             }
           }
+          activeConfiguredRuntimePolicy = runtimePolicy;
           yield* validateModelSelection(modelSelection);
           yield* (
             flavor.onSessionConfigurationUpdate?.(
@@ -7478,6 +7501,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             flavor.prepareMessage?.({
               text: messageText,
               cwd: turnInput.runtimePolicy.cwd ?? host.paths.cwd,
+              runtimePolicy: turnInput.runtimePolicy,
             }) ?? Effect.succeed({ text: messageText, resources: [] })
           );
           prompt.push(...preparedMessage.resources);
@@ -7639,7 +7663,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               if (
                 configuredSelection === null ||
                 !modelSelectionsEqual(configuredSelection, turnInput.modelSelection) ||
-                configuredInteractionMode !== turnInput.runtimePolicy.interactionMode
+                configuredInteractionMode !== turnInput.runtimePolicy.interactionMode ||
+                (flavor.sessionModeForPolicy !== undefined &&
+                  (activeConfiguredRuntimePolicy?.runtimeMode !==
+                    turnInput.runtimePolicy.runtimeMode ||
+                    activeConfiguredRuntimePolicy?.maxRuntimeMode !==
+                      turnInput.runtimePolicy.maxRuntimeMode))
               ) {
                 const currentSessionSetup = yield* Ref.get(activeSessionSetup);
                 if (currentSessionSetup === null) {

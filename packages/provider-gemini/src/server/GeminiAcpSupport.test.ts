@@ -34,6 +34,70 @@ describe("GeminiAcpSupport", () => {
     });
   });
 
+  it("adds structured flags once and lets plan policy override permissive launch arguments", () => {
+    expect(
+      buildGeminiAcpSpawnInput(
+        {
+          binaryPath: "",
+          launchArgs: "",
+          sandbox: true,
+          skipTrust: true,
+          policyPath: "/policy with spaces/rules.toml",
+        },
+        "/project",
+      ).args,
+    ).toEqual(["--sandbox", "--skip-trust", "--policy", "/policy with spaces/rules.toml", "--acp"]);
+    expect(
+      buildGeminiAcpSpawnInput(
+        {
+          binaryPath: "",
+          sandbox: true,
+          skipTrust: true,
+          policyPath: "/structured.toml",
+          launchArgs:
+            '-s --skip-trust --policy="/existing policy.toml" --approval-mode=yolo --yolo --acp',
+        },
+        "/project",
+        undefined,
+        { interactionMode: "plan" },
+      ).args,
+    ).toEqual([
+      "-s",
+      "--skip-trust",
+      "--policy=/existing policy.toml",
+      "--acp",
+      "--approval-mode",
+      "plan",
+    ]);
+  });
+
+  it("caps permissive launch flags before starting restricted sessions", () => {
+    for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+      expect(
+        buildGeminiAcpSpawnInput(
+          {
+            binaryPath: "",
+            launchArgs: "--yolo --approval-mode=yolo --allowed-tools ShellTool(*)",
+          },
+          "/project",
+          undefined,
+          { interactionMode: "default", runtimeMode },
+        ).args,
+      ).toEqual([
+        "--approval-mode",
+        runtimeMode === "auto-accept-edits" ? "auto_edit" : "default",
+        "--acp",
+      ]);
+    }
+    expect(
+      buildGeminiAcpSpawnInput({ binaryPath: "", launchArgs: "-y" }, "/project", undefined, {
+        runtimeMode: "full-access",
+        maxRuntimeMode: "approval-required",
+        interactionMode: "default",
+      }).args,
+    ).toEqual(["--approval-mode", "default", "--acp"]);
+  });
+
   it("prefers explicit and persisted auth before Gemini's environment conventions", () => {
     const initialized = initializeResult([
       "oauth-personal",

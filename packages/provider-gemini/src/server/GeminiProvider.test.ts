@@ -76,6 +76,7 @@ it.effect("preserves legacy custom models and supports named model entries from 
       customModels: ["legacy-model", { slug: "gemini-custom", name: "My Gemini" }],
     });
     const snapshot = yield* buildInitialGeminiProviderSnapshot(settings);
+    assert.isTrue(snapshot.showInteractionModeToggle);
     assert.isTrue(snapshot.models.some((model) => model.slug === "legacy-model" && model.isCustom));
     assert.isTrue(
       snapshot.models.some(

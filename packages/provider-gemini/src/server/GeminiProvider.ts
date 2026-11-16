@@ -39,7 +39,7 @@ import { discoverGeminiCatalog } from "./GeminiCatalog.ts";
 const GEMINI_PRESENTATION = {
   displayName: "Gemini",
   badgeLabel: "Early Access",
-  showInteractionModeToggle: false,
+  showInteractionModeToggle: true,
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],

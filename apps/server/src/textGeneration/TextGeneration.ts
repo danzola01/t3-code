@@ -86,12 +86,18 @@ export const make = Effect.gen(function* () {
       ),
     );
     const now = DateTime.toEpochMillis(yield* DateTime.now);
-    const limited = exhaustedUsageWindow(
-      snapshots.find((provider) => provider.instanceId === selection.instanceId),
-      now,
-      selection.model,
+    const selectedProvider = snapshots.find(
+      (provider) => provider.instanceId === selection.instanceId,
     );
-    if (limited) {
+    const unavailable =
+      selectedProvider === undefined ||
+      !selectedProvider.enabled ||
+      !selectedProvider.installed ||
+      selectedProvider.auth.status === "unauthenticated" ||
+      !isProviderAvailable(selectedProvider) ||
+      !isProviderTextGenerationCapable(selectedProvider);
+    const limited = exhaustedUsageWindow(selectedProvider, now, selection.model);
+    if (unavailable || limited) {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(
           (cause) =>

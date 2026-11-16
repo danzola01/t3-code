@@ -103,6 +103,7 @@ export const GeminiDriver: ProviderDriver<GeminiSettings, GeminiDriverEnv, Path.
       nativeEventLogger: eventLoggers.native,
       onAvailableCommands: runtimeSnapshot.onAvailableCommands,
       onSessionStarted: runtimeSnapshot.onSessionStarted,
+      onSessionConfigurationUpdate: runtimeSnapshot.onSessionConfigurationUpdate,
       environment: processEnv,
       instanceId,
     });

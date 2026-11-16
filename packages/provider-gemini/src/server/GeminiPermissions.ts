@@ -1,4 +1,10 @@
-import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
+import {
+  isRuntimeModeAbove,
+  type RuntimeMode,
+  type ProviderApprovalDecision,
+  type ProviderApprovalOption,
+} from "@t3tools/contracts";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as Acp from "effect-acp/compat";
 
 function permissionOption(
@@ -35,4 +41,28 @@ export function geminiApprovalOptions(
     }),
     { decision: "cancel", label: "Cancel" },
   ];
+}
+
+export function geminiSessionModeForPolicy(
+  policy: Pick<ProviderAdapterV2RuntimePolicy, "runtimeMode" | "maxRuntimeMode">,
+): string {
+  const mode = isRuntimeModeAbove(policy.runtimeMode, policy.maxRuntimeMode)
+    ? policy.maxRuntimeMode
+    : policy.runtimeMode;
+  return mode === "auto-accept-edits" ? "autoEdit" : "default";
+}
+
+export function geminiRuntimeModeForSessionMode(mode: string): RuntimeMode | undefined {
+  switch (mode) {
+    case "default":
+    case "plan":
+      return "approval-required";
+    case "autoEdit":
+    case "auto_edit":
+      return "auto-accept-edits";
+    case "yolo":
+      return "full-access";
+    default:
+      return undefined;
+  }
 }
