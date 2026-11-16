@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- exercises a real CLI against a loopback model endpoint.
 import * as NodeHttp from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,6 +20,7 @@ import { describe } from "vite-plus/test";
 import { applyGeminiAcpModelSelection, makeGeminiAcpRuntime } from "./GeminiAcpSupport.ts";
 import { checkGeminiProviderStatus } from "./GeminiProvider.ts";
 
+const cliPath = process.env.PATH;
 const binaryPath = process.env.GEMINI_CLI_BIN;
 const expectedVersion = process.env.GEMINI_CLI_VERSION;
 const decodeSettings = Schema.decodeSync(GeminiSettings);
@@ -153,7 +156,7 @@ for await (const line of lines) {
         if (typeof address !== "object" || address === null)
           return yield* Effect.die("Expected loopback listener");
         const environment = {
-          PATH: process.env.PATH,
+          PATH: cliPath,
           HOME: home,
           GEMINI_CLI_HOME: home,
           XDG_CONFIG_HOME: path.join(home, "config"),
@@ -334,6 +337,6 @@ for await (const line of lines) {
           .prompt({ prompt: [{ type: "text", text: "Must not dispatch" }] })
           .pipe(Effect.flip);
         assert.equal(retired._tag, "AcpTransportError");
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

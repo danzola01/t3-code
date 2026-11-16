@@ -35,9 +35,8 @@ export function ForkSettings() {
       setState(await bridge.setForkAppearance(settings));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save Dock appearance.");
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
   const disabled = busy || !state?.supported;
   const settings = state?.settings ?? { stealthEnabled: false, stealthIcon: "terminal" };

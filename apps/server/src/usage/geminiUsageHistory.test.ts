@@ -20,7 +20,7 @@ import {
 } from "./usagePricing.ts";
 
 const encodeScanCache = (cache: ScanCache) =>
-  JSON.parse(makeScanCacheWriter()(cache, {})) as {
+  JSON.parse([...makeScanCacheWriter()(cache, {})].join("")) as {
     readonly version: number;
     readonly models: readonly string[];
     readonly sessions: readonly string[];

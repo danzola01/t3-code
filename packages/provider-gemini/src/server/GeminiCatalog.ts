@@ -198,9 +198,10 @@ export const discoverGeminiCustomCommands = Effect.fn("discoverGeminiCustomComma
         .pipe(Effect.orElseSucceed(() => undefined));
       if (contents === undefined) continue;
 
-      const parsed = yield* Effect.try(() => parseToml(contents)).pipe(
-        Effect.orElseSucceed(() => undefined),
-      );
+      const parsed = yield* Effect.try({
+        try: () => parseToml(contents),
+        catch: () => undefined,
+      }).pipe(Effect.orElseSucceed(() => undefined));
       const definition = Option.getOrUndefined(decodeGeminiCommandDefinition(parsed));
       if (!definition) continue;
 

@@ -1,10 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off - Credential fingerprints use synchronous SHA-256 without retaining credentials.
 import type { GeminiSettings, ServerProviderUsageWindow } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Hex from "effect/encoding/Hex";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -82,7 +82,6 @@ export const makeGeminiUsageReader = Effect.fn("makeGeminiUsageReader")(function
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
   const client = yield* HttpClient.HttpClient;
   let refreshed: { credential: string; token: string; expiresAt: number } | undefined;
   let lastAccount:
@@ -156,12 +155,9 @@ export const makeGeminiUsageReader = Effect.fn("makeGeminiUsageReader")(function
         : undefined;
     let accountId =
       previousAccount?.accountId ??
-      Hex.encode(
-        yield* crypto.digest(
-          "SHA-256",
-          new TextEncoder().encode(encodeIdentity([credential, configuredProject ?? ""])),
-        ),
-      );
+      NodeCrypto.createHash("sha256")
+        .update(encodeIdentity([credential, configuredProject ?? ""]))
+        .digest("hex");
     const probeFailed = () => ({
       email: previousAccount?.email,
       plan: previousAccount?.plan,
@@ -256,12 +252,9 @@ export const makeGeminiUsageReader = Effect.fn("makeGeminiUsageReader")(function
           },
         };
       }
-      accountId = Hex.encode(
-        yield* crypto.digest(
-          "SHA-256",
-          new TextEncoder().encode(encodeIdentity([account.id, project])),
-        ),
-      );
+      accountId = NodeCrypto.createHash("sha256")
+        .update(encodeIdentity([account.id, project]))
+        .digest("hex");
       lastAccount = { credential, project: configuredProject ?? "", accountId, email, plan };
       const quota = yield* HttpClientResponse.schemaBodyJson(QuotaResponse)(
         yield* execute(

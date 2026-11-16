@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -16,7 +18,7 @@ const decodeRequest = Schema.decodeSync(
 
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
-it.layer(NodeServices.layer)("Gemini readiness", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Gemini readiness", (it) => {
   it.effect(
     "checks ACP installation without authenticating or creating a session in the server workspace",
     () =>

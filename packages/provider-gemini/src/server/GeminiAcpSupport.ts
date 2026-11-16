@@ -1,6 +1,6 @@
 import { type GeminiSettings, ProviderDriverKind } from "@t3tools/contracts";
 import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -126,7 +126,7 @@ export const makeGeminiAcpRuntime = Effect.fn("makeGeminiAcpRuntime")(function* 
 ): Effect.fn.Return<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
   EffectAcpErrors.AcpError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope
+  SecureRandom.SecureRandom | FileSystem.FileSystem | Path.Path | Scope.Scope
 > {
   const persistedAuthMethod = yield* readGeminiSelectedAuthMethod(
     input.geminiSettings ?? { homePath: "" },

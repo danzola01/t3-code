@@ -1,3 +1,5 @@
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -46,7 +48,7 @@ function makeAcpGeminiWrapper(directory: string, environment: Record<string, str
   return binaryPath;
 }
 
-const testLayer = NodeServices.layer;
+const testLayer = Layer.mergeAll(NodeServices.layer, NodeCrypto.layer);
 
 it.layer(testLayer)("GeminiTextGeneration", (it) => {
   it.effect("uses ACP for structured text-generation jobs, including fenced replies", () =>

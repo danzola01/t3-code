@@ -82,9 +82,10 @@ it.layer(NodeServices.layer)("GeminiCatalog", (it) => {
           ...fileSystem,
           readDirectory: (directory, options) =>
             options?.recursive
-              ? Effect.tryPromise(() =>
-                  NodeFSP.readdir(directory, { recursive: true, withFileTypes: true }),
-                ).pipe(
+              ? Effect.tryPromise({
+                  try: () => NodeFSP.readdir(directory, { recursive: true, withFileTypes: true }),
+                  catch: () => undefined,
+                }).pipe(
                   Effect.map((entries) =>
                     entries.map((entry) =>
                       path.relative(directory, path.join(entry.parentPath, entry.name)),

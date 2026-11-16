@@ -102,7 +102,8 @@ function withAppearance<A, E, R>(
                   assert.deepEqual(command.args.slice(0, 3), ["-s", "format", "png"]);
                   const source = command.args[3];
                   const output = command.args[5];
-                  if (!source || !output) throw new Error("Expected input and output icon paths");
+                  if (typeof source !== "string" || typeof output !== "string")
+                    throw new Error("Expected input and output icon paths");
                   assert.equal(command.args[4], "--out");
                   converted.set(output, source);
                   return ChildProcessSpawner.ExitCode(options.failConversion ? 1 : 0);
